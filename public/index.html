@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#3b2a1e">
+  <title>Cookie Flow</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍪</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">🍪 <span id="kitchen-name">Cookie Flow</span></a>
+    <div id="station-title" class="station-title"></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="status">
+      <span id="clock" class="clock"></span>
+      <span id="conn" class="conn" title="Connection"></span>
+    </div>
+  </header>
+  <div id="sound-banner" class="sound-banner">🔔 Tap anywhere to enable sound alerts on this tablet</div>
+  <main id="app"><div class="loading">Connecting…</div></main>
+  <div id="toasts" class="toasts"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

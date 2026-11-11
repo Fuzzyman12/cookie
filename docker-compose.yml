@@ -1,0 +1,15 @@
+services:
+  cookie-flow:
+    build: .
+    image: cookie-flow:latest
+    container_name: cookie-flow
+    ports:
+      - "8080:8080"
+    volumes:
+      - cookie-data:/data
+    environment:
+      - TZ=America/Chicago   # set to your local time zone
+    restart: unless-stopped
+
+volumes:
+  cookie-data:
