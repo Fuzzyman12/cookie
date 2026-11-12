@@ -617,12 +617,18 @@ pages.overview = () => {
   return html;
 };
 
+// Fixed scale (pixels per minute) so a long day scrolls sideways instead of
+// getting squeezed. Batch names stay pinned on the left while scrolling.
+const GANTT_PX_PER_MIN = 4;
 function gantt(active) {
   const t0 = now() - 10 * MIN;
   const ends = active.map((b) => P(b.id).doneAt || now());
-  const t1 = Math.max(t0 + 60 * MIN, ...ends) + 5 * MIN;
-  const x = (t) => ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * 100;
-  const bar = (a, b, cls, label = '', style = '') => (a && b && b > t0 && b > a ? `<div class="gbar ${cls}" style="left:${x(a)}%;width:${Math.max(0.3, x(b) - x(a))}%;${style}" title="${esc(label)}">${esc(label)}</div>` : '');
+  const t1 = Math.max(t0 + 60 * MIN, ...ends) + 10 * MIN;
+  const W = Math.round(((t1 - t0) / MIN) * GANTT_PX_PER_MIN);
+  const x = (t) => Math.round(((Math.min(Math.max(t, t0), t1) - t0) / MIN) * GANTT_PX_PER_MIN);
+  const bar = (a, b, cls, label = '', style = '') => (a && b && b > t0 && b > a
+    ? `<div class="gbar ${cls}" style="left:${x(a)}px;width:${Math.max(2, x(b) - x(a))}px;${style}" title="${esc(label)} ${fmtTime(a)}–${fmtTime(b)}">${esc(label)}</div>` : '');
+  const track = (inner) => `<div class="gtrack" style="width:${W}px">${inner}</div>`;
 
   const rows = [...active].sort((a, b) => (P(a.id).mixStart ?? a.t.mixStart ?? 0) - (P(b.id).mixStart ?? b.t.mixStart ?? 0)).map((b) => {
     const p = P(b.id), t = b.t;
@@ -632,31 +638,33 @@ function gantt(active) {
     const panChillE = b.recipe.panChillMinutes ? (p.panChillEnd ?? t.panChillEnd) : null;
     const bakeS = t.bakeStart ?? p.bakeStart, bakeE = p.bakeEnd ?? t.coolStart;
     const coolE = p.coolEnd ?? t.packStart;
-    return `<div class="grow"><div class="glabel">${title(b)}</div><div class="gtrack">
+    return `<div class="grow"><div class="glabel">${title(b)}</div>${track(`
       ${bar(mixS, mixE, 'mix', 'mix')}${chillE ? bar(mixE, chillE, 'chill', 'chill') : ''}${bar(prepS, prepE, 'prep', 'prep')}${panChillE ? bar(prepE, panChillE, 'chill', 'chill') : ''}
-      ${bar(bakeS, bakeE, 'bake', 'bake')}${bar(bakeE, coolE, 'cool', 'cool')}${bar(coolE, p.doneAt, 'pack', 'pack')}
-    </div></div>`;
+      ${bar(bakeS, bakeE, 'bake', 'bake')}${bar(bakeE, coolE, 'cool', 'cool')}${bar(coolE, p.doneAt, 'pack', 'pack')}`)}</div>`;
   }).join('');
 
   const ovenRows = S().ovens.map((o) => {
     const os = App.state.ovens[o.id] || {};
     const loads = [...((App.plan.ovens[o.id] || {}).schedule || [])];
     if (os.current) loads.unshift({ batchId: os.current.batchId, start: os.current.startedAt, end: loadEnd(os.current), temp: os.current.tempF });
-    return `<div class="grow oven-row"><div class="glabel"><b>🔥 ${esc(o.name)}</b></div><div class="gtrack">${loads.map((l) => {
+    return `<div class="grow oven-row"><div class="glabel"><b>🔥 ${esc(o.name)}</b></div>${track(loads.map((l) => {
       const c = B(l.batchId)?.recipe.color || '#999';
       return (l.changeoverAt ? bar(l.changeoverAt, l.start, 'changeover', `→${l.temp}°`) : '') + bar(l.start, l.end, 'load', `${l.temp}°`, `background:${esc(c)}`);
-    }).join('')}</div></div>`;
+    }).join(''))}</div>`;
   }).join('');
 
-  const ticks = [];
-  const step = t1 - t0 > 6 * 60 * MIN ? 60 * MIN : 30 * MIN;
-  for (let t = Math.ceil(t0 / step) * step; t < t1; t += step) ticks.push(`<div class="gtick" style="left:${x(t)}%">${fmtTime(t)}</div>`);
+  const step = 30 * MIN;
+  const tickTimes = [];
+  for (let t = Math.ceil(t0 / step) * step; t < t1; t += step) tickTimes.push(t);
 
-  return `<div class="gantt">
-    <div class="grow gaxis"><div class="glabel"></div><div class="gtrack">${ticks.join('')}<div class="gnow" style="left:${x(now())}%"></div></div></div>
-    ${ovenRows}${rows}
-    <div class="legend"><span class="gbar mix">mix</span><span class="gbar chill">chill</span><span class="gbar prep">prep</span><span class="gbar bake">bake</span><span class="gbar cool">cool</span><span class="gbar pack">pack</span><span class="gbar changeover">oven temp change</span></div>
-  </div>`;
+  return `<div class="gantt" id="gantt-scroll" data-keep-scroll>
+    <div class="ginner" style="width:calc(var(--glabel) + ${W}px)">
+      <div class="glines">${tickTimes.map((t) => `<div class="gline" style="left:calc(var(--glabel) + ${x(t)}px)"></div>`).join('')}<div class="gnow" style="left:calc(var(--glabel) + ${x(now())}px)"></div></div>
+      <div class="grow gaxis"><div class="glabel muted small">← scroll →</div>${track(tickTimes.map((t) => `<div class="gtick" style="left:${x(t)}px">${fmtTime(t)}</div>`).join(''))}</div>
+      ${ovenRows}${rows}
+    </div>
+  </div>
+  <div class="legend"><span class="gbar mix">mix</span><span class="gbar chill">chill</span><span class="gbar prep">prep</span><span class="gbar bake">bake</span><span class="gbar cool">cool</span><span class="gbar pack">pack</span><span class="gbar changeover">oven temp change</span></div>`;
 }
 
 function table(head, rows) {
@@ -1073,6 +1081,8 @@ function render() {
   const focused = document.activeElement?.id;
   const openDetails = [...document.querySelectorAll('#app details[open]')].map((d) => d.querySelector('summary')?.textContent);
   const scroll = window.scrollY;
+  const innerScroll = {};
+  for (const el of document.querySelectorAll('#app [data-keep-scroll][id]')) innerScroll[el.id] = el.scrollLeft;
 
   const fn = pages[page] || pages.home;
   $('#app').innerHTML = `<div class="page page-${esc(page)}">${fn(arg)}</div>`;
@@ -1084,6 +1094,7 @@ function render() {
   if (!fresh) {
     for (const d of document.querySelectorAll('#app details')) if (openDetails.includes(d.querySelector('summary')?.textContent)) d.open = true;
     window.scrollTo(0, scroll);
+    for (const [id, left] of Object.entries(innerScroll)) { const el = document.getElementById(id); if (el) el.scrollLeft = left; }
   } else window.scrollTo(0, 0);
   if (focused) document.getElementById(focused)?.focus();
   tick();
