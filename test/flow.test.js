@@ -131,6 +131,26 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     ({ state } = await get());
     assert.strictEqual(state.batches.find((x) => x.id === id).stage, 'done');
 
+    // Multiple prep stations
+    await assert.rejects(call('PUT', '/api/settings', { prepStations: '' }), /at least one prep station/);
+    await call('PUT', '/api/settings', { prepStations: 'Prep Table A\nPrep Table B' });
+    ({ state } = await get());
+    assert.deepStrictEqual(state.settings.prepStations, ['Prep Table A', 'Prep Table B']);
+    const sn = state.batches.filter((x) => x.recipeId === 'r-snickerdoodle' && x.stage === 'queued').map((x) => x.id);
+    assert.strictEqual(sn.length, 2);
+    for (const sid of sn) { await act(sid, 'startMix'); await act(sid, 'finishMix'); }
+    ({ plan } = await get());
+    assert.deepStrictEqual(sn.map((sid) => plan.batches[sid].prepStation).sort(), ['Prep Table A', 'Prep Table B'], 'planner preps both at once');
+    assert.strictEqual(plan.batches[sn[0]].prepStart, plan.batches[sn[1]].prepStart);
+    await act(sn[0], 'startPrep', { station: 'Prep Table B' });
+    await assert.rejects(act(sn[1], 'startPrep', { station: 'Prep Table B' }), /already prepping/);
+    await assert.rejects(act(sn[1], 'startPrep', { station: 'Nope' }), /Unknown prep station/);
+    await act(sn[1], 'startPrep'); // takes the free one
+    ({ state, plan } = await get());
+    assert.deepStrictEqual(sn.map((sid) => state.batches.find((x) => x.id === sid).location), ['Prep Table B', 'Prep Table A']);
+    assert.strictEqual(plan.batches[sn[0]].prepStation, 'Prep Table B');
+    for (const sid of sn) await act(sid, 'finishPrep', { pans: 3 });
+
     // Chilling panned dough after prep (seed: Oatmeal Raisin chills pans 20 min)
     await call('POST', '/api/batches', { recipeId: 'r-oatmeal', count: 2 });
     ({ state } = await get());

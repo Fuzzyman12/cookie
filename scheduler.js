@@ -94,13 +94,15 @@ function simulate(ctx, order) {
   [...notQueued, ...order].forEach((b, i) => seq.set(b.id, i));
 
   // ---------- Prep
-  const prepSlots = Array.from({ length: Math.max(1, Math.floor(num(s.prepStations, 1))) }, () => now);
+  const prepNames = Array.isArray(s.prepStations) && s.prepStations.length ? s.prepStations : ['Cookie Prep'];
+  const prepSlots = prepNames.map(() => now);
   for (const b of active) {
     if (b.stage !== 'prepping') continue;
     const end = Math.max(now, (b.t.prepStart || now) + b.d.prepPerPan * b.pans);
-    const k = argmin(prepSlots);
+    let k = prepNames.indexOf(b.location);
+    if (k < 0) k = argmin(prepSlots);
     prepSlots[k] = Math.max(prepSlots[k], end);
-    Object.assign(P[b.id], { prepStart: b.t.prepStart, prepEnd: end });
+    Object.assign(P[b.id], { prepStart: b.t.prepStart, prepEnd: end, prepStation: b.location });
   }
   const waiting = active
     .filter((b) => ['queued', 'mixing', 'chilling', 'ready_prep'].includes(b.stage))
@@ -116,6 +118,7 @@ function simulate(ctx, order) {
     waiting.splice(waiting.indexOf(pick), 1);
     const p = P[pick.id];
     p.prepStart = t;
+    p.prepStation = prepNames[k];
     p.prepEnd = t + pick.d.prepPerPan * pick.pans;
     prepSlots[k] = p.prepEnd;
   }

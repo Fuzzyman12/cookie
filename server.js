@@ -30,6 +30,11 @@ function loadState() {
 
 function normalize(s) {
   s.settings = { ...defaultSettings(), ...(s.settings || {}) };
+  // prepStations used to be a count of people; it's now a list of named stations.
+  if (!Array.isArray(s.settings.prepStations)) {
+    const count = Math.max(1, Math.round(Number(s.settings.prepStations) || 1));
+    s.settings.prepStations = count === 1 ? ['Cookie Prep'] : Array.from({ length: count }, (_, i) => `Cookie Prep #${i + 1}`);
+  }
   s.recipes ||= [];
   s.batches ||= [];
   s.ovens ||= {};
@@ -246,11 +251,16 @@ const actions = {
     b.t.chillEnd = Date.now();
     setStage(b, 'ready_prep', 'Cookie Prep');
   },
-  startPrep(b) {
+  startPrep(b, { station }) {
     need(b, 'chilling', 'ready_prep');
+    const busy = new Set(state.batches.filter((x) => x.stage === 'prepping').map((x) => x.location));
+    const st = station || S().prepStations.find((x) => !busy.has(x));
+    if (!st) fail('No free prep station');
+    if (!S().prepStations.includes(st)) fail(`Unknown prep station: ${st}`);
+    if (busy.has(st)) fail(`${st} is already prepping something`, 409);
     if (b.stage === 'chilling') b.t.chillEnd = Date.now();
     b.t.prepStart = Date.now();
-    setStage(b, 'prepping', 'Cookie Prep');
+    setStage(b, 'prepping', st);
   },
   finishPrep(b, { pans, to }) {
     need(b, 'prepping');
@@ -341,7 +351,11 @@ const actions = {
       }
       case 'chilling': b.t.chillStart = now; loc = S().chillLocations[0]; break;
       case 'ready_prep': loc = 'Cookie Prep'; break;
-      case 'prepping': b.t.prepStart = now; loc = 'Cookie Prep'; break;
+      case 'prepping': {
+        const busy = new Set(state.batches.filter((x) => x.stage === 'prepping' && x.id !== b.id).map((x) => x.location));
+        loc = S().prepStations.find((x) => !busy.has(x)) || S().prepStations[0];
+        b.t.prepStart = now; break;
+      }
       case 'pan_chilling': b.t.panChillStart = now; loc = S().chillLocations[0]; break;
       case 'staged': loc = 'Oven Staging Rack'; break;
       case 'baking': b.t.bakeStart = now; loc = 'Ovens'; break;
@@ -534,7 +548,7 @@ app.put('/api/settings', route((req) => {
     chillLocations: strList(body.chillLocations ?? cur.chillLocations),
     coolingAreas: strList(body.coolingAreas ?? cur.coolingAreas),
     ovens: names.map((name, i) => ({ id: 'oven' + (i + 1), name })),
-    prepStations: Math.round(n(body.prepStations, cur.prepStations, 1)),
+    prepStations: strList(body.prepStations ?? cur.prepStations),
     prepMinutesPerPan: n(body.prepMinutesPerPan, cur.prepMinutesPerPan),
     ovenPansPerLoad: Math.round(n(body.ovenPansPerLoad, cur.ovenPansPerLoad, 1)),
     defaultPansPerBatch: Math.round(n(body.defaultPansPerBatch, cur.defaultPansPerBatch, 1)),
@@ -543,6 +557,7 @@ app.put('/api/settings', route((req) => {
     coolDownMinutesPer25F: n(body.coolDownMinutesPer25F, cur.coolDownMinutesPer25F),
   };
   if (!next.mixStations.length) fail('Need at least one mix station');
+  if (!next.prepStations.length) fail('Need at least one prep station');
   if (!next.ovens.length) fail('Need at least one oven');
   state.settings = next;
   for (const o of next.ovens) state.ovens[o.id] ||= { targetTempF: null, readyAt: 0, current: null };

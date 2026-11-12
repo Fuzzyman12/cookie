@@ -20,7 +20,8 @@ Bookmark (or "Add to Home Screen") the station URL:
 |---|---|
 | Mixing (Mix Stations #1–#4) | `/#/mixing` |
 | Chilling (Fridge, Outdoor Chiller) | `/#/chilling` |
-| Cookie Prep | `/#/prep` |
+| Cookie Prep (all prep stations) | `/#/prep` |
+| One prep station only (1st, 2nd, …) | `/#/prep/1`, `/#/prep/2` |
 | Baking (ovens + Oven Staging Rack) | `/#/baking` |
 | Cooling & Packing | `/#/cooling` |
 | Manager overview / timeline | `/#/overview` |
@@ -81,7 +82,8 @@ On every change (and every 20 s) the server simulates the rest of the day:
 
 - **Mix stations** – how many batches can mix at once.
 - **Chill** – timed, doesn't hold up a station.
-- **Prep** – `prepStations` people, `prep minutes per pan × pans`.
+- **Prep** – one batch at a time at each prep station (Settings → Prep
+  stations), taking `prep minutes per pan × pans`.
 - **Ovens** – each holds `pans per load`. Changing temperature costs time
   (preheat from cold, minutes per 25°F up or down), so the planner groups loads
   by temperature and tells the baker when to change an oven and to what.

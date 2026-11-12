@@ -264,3 +264,9 @@ body.alarming { animation: flash .8s infinite alternate; }
 .gcool .lbl-cooled { display: none; color: var(--ok); }
 .gcool:has(.timer.over) .lbl-cooled { display: inline; }
 .gcool:has(.timer.over) .lbl-cooling { display: none; }
+
+/* ---------- prep station picker */
+.stationpick { align-items: center; margin-bottom: .8rem; }
+.stationpick a.chip { text-decoration: none; color: var(--ink); padding: .45rem .9rem; font-weight: 600; border: 2px solid transparent; }
+.stationpick a.chip.on { border-color: var(--primary); background: #fff; }
+.prepgrid { margin-bottom: 1rem; }
