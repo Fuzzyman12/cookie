@@ -330,3 +330,7 @@ body.alarming { animation: flash .8s infinite alternate; }
 .checkfield { flex-direction: row; align-items: center; gap: .6rem; color: var(--ink); }
 .checkfield input { width: 24px; height: 24px; min-height: auto; }
 #add-hint:not(:empty) { margin-top: .5rem; }
+
+/* Mixing: Up next sits at the very top; the station picker follows it. */
+.page-mixing > .card.next:first-child, .page-mixing > .empty:first-child { margin-top: 0; }
+.page-mixing .stationpick { margin-top: 1.2rem; }

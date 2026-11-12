@@ -151,8 +151,6 @@ pages.mixing = (arg) => {
   const free = shown.filter((x) => !busy.has(x));
   let html = '';
 
-  if (all.length > 1) html += stationPicker('mixing', 'All mix stations', all, only);
-
   const stationCard = (st) => {
     const b = mixing.find((x) => x.location === st);
     if (!b) return `<div class="card idle"><div class="eyebrow">${esc(st)}</div><div class="muted big">Free</div></div>`;
@@ -168,11 +166,10 @@ pages.mixing = (arg) => {
       ${r.chillMinutes > 0 ? `<div class="hint">❄️ Needs ${r.chillMinutes} min chill${isLater(b) ? ` — overnight, bakes ${esc(dayLabel(b.bakeDate).toLowerCase())}` : ''}. ${esc(r.chillNotes)}</div>` : '<div class="hint">No chill needed — goes straight to Cookie Prep.</div>'}
       <div class="btnrow">${done}</div></div>`;
   };
-  const stations = section(only ? 'This station' : 'Mix stations', `<div class="grid">${shown.map(stationCard).join('')}</div>`);
+  // A single station's card spans the full width, like the Up next card.
+  const stations = section(only ? esc(only) : 'Mix stations', only ? stationCard(only) : `<div class="grid">${shown.map(stationCard).join('')}</div>`);
 
-  // A single-station tablet shows its own work first.
-  if (only) html += stations;
-
+  // Up next always comes first on the page.
   if (queue.length) {
     const b = queue[0], r = b.recipe;
     // The planner may hold a batch so its dough is ready just when the ovens are.
@@ -193,7 +190,8 @@ pages.mixing = (arg) => {
     html += empty('Nothing queued to mix. Add batches from <a href="#/overview">Overview</a>.');
   }
 
-  if (!only) html += stations;
+  if (all.length > 1) html += stationPicker('mixing', 'All mix stations', all, only);
+  html += stations;
 
   if (today.length) html += section('Mixing queue', queue.length > 1 ? table(['#', 'Batch', 'Planned start', 'Chill', 'Oven'], queue.slice(1).map((b, i) => [
     i + 2, title(b), `${fmtTime(P(b.id).mixStart)} <span class="muted">(${relTime(P(b.id).mixStart)})${all.length > 1 && P(b.id).mixStation ? ` · ${esc(P(b.id).mixStation)}` : ''}</span>`,
