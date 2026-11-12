@@ -411,6 +411,58 @@ function ovenCard(o) {
   </div>`;
 }
 
+// ---------- Shares (packed containers vs. goal)
+// Each share gets one container of each cookie: goal = shares × cookies per container.
+// "Packed" is what was entered at packing; "projected" adds an estimate for
+// batches still in progress (cookies per batch ÷ cookies per container).
+function sharesRows(includeIdle) {
+  const shares = Number(S().shares) || 0;
+  const log = App.state.packLog || [];
+  const activeIds = App.state.batches.filter((b) => b.stage !== 'done').map((b) => b.recipeId);
+  const ids = new Set([...log.map((e) => e.recipeId), ...activeIds,
+    ...(includeIdle ? App.state.recipes.filter((r) => Number(r.perContainer) > 0).map((r) => r.id) : [])]);
+  return [...ids].map((id) => {
+    const r = App.state.recipes.find((x) => x.id === id);
+    const entries = log.filter((e) => e.recipeId === id);
+    const per = r ? Number(r.perContainer) || 0 : entries.at(-1)?.perContainer || 0;
+    const active = App.state.batches.filter((b) => b.recipeId === id && b.stage !== 'done');
+    const containers = entries.reduce((n, e) => n + e.containers, 0);
+    const estFrom = (b) => (per ? Math.floor((Number(b.recipe.yieldPerBatch) || 0) / per) : 0);
+    const projected = containers + active.reduce((n, b) => n + estFrom(b), 0);
+    return {
+      id, per, shares, containers, projected,
+      name: r ? r.name : entries.at(-1)?.name || 'Deleted recipe',
+      color: r ? r.color : '#999',
+      yieldPerBatch: r ? Number(r.yieldPerBatch) || 0 : 0,
+      cookies: entries.reduce((n, e) => n + e.cookies, 0),
+      activeCount: active.length,
+      need: Math.max(0, shares - containers),
+    };
+  }).filter((x) => x.per > 0 || x.containers > 0).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function sharesTable(includeIdle) {
+  const shares = Number(S().shares) || 0;
+  if (!shares) return empty('Not tracking shares. Set the number of shares in <a href="#/settings">Settings</a>.');
+  const rows = sharesRows(includeIdle);
+  if (!rows.length) return empty('Nothing packed or in progress yet.');
+  return table(['Cookie', 'Packed', `Goal (${shares} shares)`, 'Still needed', 'Projected', ...(includeIdle ? ['Batches for goal'] : [])], rows.map((x) => {
+    const goalCookies = shares * x.per;
+    const short = shares - x.projected;
+    const batchesFor = x.per && x.yieldPerBatch ? Math.ceil(goalCookies / x.yieldPerBatch) : null;
+    return [
+      `<div class="btitle" style="--c:${esc(x.color)}"><span class="swatch"></span><span class="bname">${esc(x.name)}</span></div>`,
+      `<b>${x.containers}</b> containers · ${x.cookies} cookies`,
+      x.per ? `${shares} × ${x.per} = ${goalCookies} cookies` : '<span class="muted">not in shares</span>',
+      x.per ? (x.need ? `<b>${x.need}</b> container${x.need > 1 ? 's' : ''}` : '<span class="ok">✓ Done</span>') : '—',
+      !x.per ? '—' : short > 0
+        ? `<span class="warn-text">~${x.projected} — short ${short}</span>${x.yieldPerBatch ? ` <span class="muted">(add ~${Math.ceil((short * x.per) / x.yieldPerBatch)} batch${Math.ceil((short * x.per) / x.yieldPerBatch) > 1 ? 'es' : ''})</span>` : ''}`
+        : `<span class="ok">~${x.projected} ✓</span>${x.activeCount ? ` <span class="muted">(${x.activeCount} in progress)</span>` : ''}`,
+      ...(includeIdle ? [batchesFor ? `${batchesFor} <span class="muted">(${x.yieldPerBatch}/batch)</span>` : '—'] : []),
+    ];
+  }));
+}
+
 // ---------- Cooling & Packing
 // Pans start cooling the moment they come out of the oven. Each oven load is a
 // group with its own cooling timer and its own post-bake checklist, because
@@ -435,6 +487,29 @@ function coolGroupBlock(b, g, gi, firstPan) {
     <div class="gcool"><span class="lbl-cooling">Cooling</span><span class="lbl-cooled">✓ Cooled</span> ${timerDown(end, `cool-${b.id}-${gi}-${g.outAt}`, `${b.label}, ${range.toLowerCase()} cooled`, 'good')}</div>
     ${progress(g.outAt, end)}
     ${steps ? `<ol class="steps">${steps}</ol>` : ''}
+  </div>`;
+}
+
+// Packer enters the real count; the estimate is only a hint/placeholder.
+function packCount(b) {
+  const r = b.recipe;
+  const per = Number(r.perContainer) || 0;
+  const est = per ? Math.floor((Number(r.yieldPerBatch) || 0) / per) : 0;
+  const share = sharesRows(false).find((x) => x.id === b.recipeId);
+  const shares = Number(S().shares) || 0;
+  const shareHint = shares && per && share
+    ? ` Shares: ${share.containers} of ${shares} packed${share.need ? `, <b>${share.need} still needed</b>` : ' ✓'}.` : '';
+  return `<div class="pancount">
+    <label for="cont-${b.id}">How many containers did you pack?</label>
+    <div class="stepper">
+      ${btn('−', 'panStep', { target: `cont-${b.id}`, delta: -1, est: est || 1 }, 'big')}
+      <input id="cont-${b.id}" type="number" min="0" max="10000" step="1" inputmode="numeric" placeholder="${est ? `~${est}` : ''}">
+      ${btn('+', 'panStep', { target: `cont-${b.id}`, delta: 1, est: est || 1 }, 'big')}
+    </div>
+    <div class="perrow"><label for="per-${b.id}">Cookies per container</label>
+      <input id="per-${b.id}" type="number" min="1" max="1000" step="1" inputmode="numeric" value="${per || ''}">
+      <span class="packtotal" data-id="${b.id}"></span></div>
+    <div class="muted small">${est ? `Estimate: about ${est} containers from ≈${r.yieldPerBatch} cookies.` : ''}${shareHint}</div>
   </div>`;
 }
 
@@ -473,7 +548,8 @@ pages.cooling = () => {
       <div class="meta">${esc(b.location)} · ${b.pans} pans · ≈${r.yieldPerBatch} cookies · ${timerUp(b.t.packStart)} elapsed (planned ${r.packMinutes} min)</div>
       ${stepList(b, 'pack', r.packSteps) || '<div class="muted">No packing steps</div>'}
       ${r.notes ? `<div class="hint">${esc(r.notes)}</div>` : ''}
-      <div class="btnrow">${batchBtn(b, 'finishPacking', 'Packed ✓ Done', {}, 'primary big')}</div></div>`;
+      ${packCount(b)}
+      <div class="btnrow">${btn('Packed ✓ Done', 'packDone', { id: b.id }, 'primary big')}</div></div>`;
   }).join('')}</div>` : empty('Nothing being packed.'));
 
   const coming = inStage('baking', 'staged', 'pan_chilling', 'prepping').filter((b) => !b.coolGroups.length).sort((a, b) => P(a.id).bakeEnd - P(b.id).bakeEnd);
@@ -482,10 +558,12 @@ pages.cooling = () => {
     return [title(b), STAGE_LABEL[b.stage], esc(b.coolingArea || '—'), Number.isFinite(firstOut) ? `${fmtTime(firstOut)} (${relTime(firstOut)})` : '—'];
   })) : empty('Nothing in the ovens.'));
 
+  html += section('Shares', sharesTable(false));
+
   const done = inStage('done');
   if (done.length) {
-    const total = done.reduce((s, b) => s + (Number(b.recipe.yieldPerBatch) || 0), 0);
-    html += section(`Done today <span class="muted">— ${done.length} batches, ≈${total} cookies</span>`, `<div class="chips">${done.map((b) => `<span class="chip" style="--c:${esc(b.recipe.color)}"><span class="swatch"></span>${esc(b.label)}</span>`).join('')}</div>`);
+    const total = done.reduce((s, b) => s + (b.packed ? b.packed.cookies : 0), 0);
+    html += section(`Done today <span class="muted">— ${done.length} batch${done.length === 1 ? '' : 'es'}, ${total} cookies packed</span>`, `<div class="chips">${done.map((b) => `<span class="chip" style="--c:${esc(b.recipe.color)}"><span class="swatch"></span>${esc(b.label)}${b.packed ? ` <span class="muted">${b.packed.containers}×${b.packed.perContainer}</span>` : ''}</span>`).join('')}</div>`);
   }
   return html;
 };
@@ -509,6 +587,7 @@ pages.overview = () => {
     ${btn('Add to queue', 'addBatches', {}, 'primary')}
   </div><p class="muted">The planner re-sorts the queue automatically: long chills start first, same oven temps are grouped, and ovens are kept busy.</p>` : empty('Create a recipe first on the <a href="#/recipes">Recipes</a> page.'));
 
+  html += section('Shares', sharesTable(true));
   html += section('Timeline', active.length ? gantt(active) : empty('No active batches.'));
 
   const all = [...App.state.batches].sort((a, b) => STAGES.indexOf(b.stage) - STAGES.indexOf(a.stage) || (P(a.id).mixStart ?? 0) - (P(b.id).mixStart ?? 0));
@@ -516,7 +595,7 @@ pages.overview = () => {
     title(b),
     `<select class="stage-select" data-id="${b.id}">${STAGES.map((s) => `<option value="${s}" ${s === b.stage ? 'selected' : ''}>${STAGE_LABEL[s]}</option>`).join('')}</select>`,
     esc(b.location),
-    b.stage === 'done' ? `✓ ${fmtTime(b.t.done)}` : fmtTime(P(b.id).doneAt),
+    b.stage === 'done' ? `✓ ${fmtTime(b.t.done)}${b.packed ? ` <span class="muted">· ${b.packed.containers}×${b.packed.perContainer} = ${b.packed.cookies}</span>` : ''}` : fmtTime(P(b.id).doneAt),
     `${btn(b.rush ? 'Un-rush' : 'Rush', 'batch', { id: b.id, action: 'setRush', body: { rush: !b.rush } }, 'tiny')} ${btn('Delete', 'deleteBatch', { id: b.id }, 'tiny danger')}`,
   ])) + `<div class="btnrow">${btn('Clear finished batches', 'clearDone', {}, '')}</div>` : empty('No batches yet.'));
   return html;
@@ -588,7 +667,7 @@ const STEP_GROUPS = [
   ['prep', 'Prep (panning)', [['prepMinutesPerPan', 'Prep minutes per pan'], ['panChillMinutes', 'Chill pans after prep (min, 0 = no chill)'], ['panChillNotes', 'Pan chill notes', 'text']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
   ['bake', 'Baking', [['ovenTempF', 'Oven temp (°F)'], ['bakeMinutes', 'Bake time per load (min)']], 'bakeSteps', 'Bake reminders', 'minutes = alert at this many minutes into the bake'],
   ['cool', 'Cooling & finishing', [['coolMinutes', 'Cooling time (min)']], 'finishSteps', 'Post-bake prep (glaze, icing…)', 'minutes = do this many minutes after the pans come out of the oven'],
-  ['pack', 'Packing', [['packMinutes', 'Finishing + packing time (min)'], ['yieldPerBatch', 'Cookies per batch']], 'packSteps', 'Packing steps', 'minutes = optional step timer'],
+  ['pack', 'Packing', [['packMinutes', 'Finishing + packing time (min)'], ['yieldPerBatch', 'Cookies per batch (estimate)'], ['perContainer', 'Cookies per container (0 = not in shares)']], 'packSteps', 'Packing steps', 'minutes = optional step timer'],
 ];
 
 function stepRow(s = {}) {
@@ -598,7 +677,7 @@ function stepRow(s = {}) {
 pages.recipe = (id) => {
   App.locked = true; // don't wipe the form on live updates
   const r = id === 'new'
-    ? { name: '', color: '#c8814a', yieldPerBatch: 48, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', prepMinutesPerPan: S().prepMinutesPerPan, prepSteps: [], panChillMinutes: 0, panChillNotes: '', ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
+    ? { name: '', color: '#c8814a', yieldPerBatch: 48, perContainer: 6, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', prepMinutesPerPan: S().prepMinutesPerPan, prepSteps: [], panChillMinutes: 0, panChillNotes: '', ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
     : App.state.recipes.find((x) => x.id === id);
   if (!r) return empty('Recipe not found. <a href="#/recipes">Back</a>');
   const field = ([k, label, type]) => type === 'textarea'
@@ -639,6 +718,9 @@ pages.settings = () => {
       ${list('ovens', 'Ovens', s.ovens.map((o) => o.name))}
       ${list('coolingAreas', 'Cooling & packing areas', s.coolingAreas)}
     </div></div>
+    <div class="card"><h3>Shares</h3><div class="formgrid">
+      ${numf('shares', 'Number of shares (each gets 1 container of every cookie)')}
+    </div><p class="muted small">Cookies per container is set on each recipe. Goal per cookie = shares × cookies per container.</p></div>
     <div class="card"><h3>Capacity & timing (used by the planner)</h3><div class="formgrid">
       ${numf('prepMinutesPerPan', 'Default prep min per pan')}
       ${numf('ovenPansPerLoad', 'Pans per oven load')}
@@ -648,7 +730,7 @@ pages.settings = () => {
       ${numf('coolDownMinutesPer25F', 'Cool down: min per −25°F')}
     </div></div>
     <div class="btnrow">${btn('Save settings', 'saveSettings', {}, 'primary big')}</div>
-    <div class="card danger-zone"><h3>Danger zone</h3><div class="btnrow">${btn('Clear finished batches', 'clearDone')}${btn('Clear ALL batches', 'clearAll', {}, 'danger')}</div></div>
+    <div class="card danger-zone"><h3>Danger zone</h3><div class="btnrow">${btn('Clear finished batches', 'clearDone')}${btn('Reset packed counts (new day)', 'resetPacked')}${btn('Clear ALL batches', 'clearAll', {}, 'danger')}</div></div>
   </form>`;
 };
 
@@ -694,8 +776,21 @@ const ACTIONS = {
   panStep: (d) => {
     const input = document.getElementById(d.target);
     const cur = input.value === '' ? Number(d.est) - Number(d.delta) : Number(input.value);
-    input.value = Math.max(1, cur + Number(d.delta));
+    input.value = Math.max(Number(input.min) || 0, cur + Number(d.delta));
+    tick();
   },
+  packDone: (d) => {
+    const cont = document.getElementById(`cont-${d.id}`), per = document.getElementById(`per-${d.id}`);
+    const containers = Number(cont.value), perContainer = Number(per.value);
+    if (cont.value === '' || !Number.isInteger(containers) || containers < 0) {
+      toast('Enter how many containers you packed first', 'error'); cont.focus(); return;
+    }
+    if (per.value === '' || !Number.isInteger(perContainer) || perContainer < 1) {
+      toast('Enter how many cookies are in each container', 'error'); per.focus(); return;
+    }
+    return api('POST', `/api/batches/${d.id}/finishPacking`, { containers, perContainer });
+  },
+  resetPacked: () => confirm('Reset all packed counts to zero for a new day?') && api('POST', '/api/pack/reset'),
   finishPrep: (d) => {
     const input = document.getElementById(`pans-${d.id}`);
     const pans = Number(input.value);
@@ -748,6 +843,8 @@ document.addEventListener('click', async (e) => {
   el.disabled = true;
   try { await fn(el.dataset, el); } catch { /* toast already shown */ } finally { el.disabled = false; }
 });
+
+document.addEventListener('input', (e) => { if (e.target.matches('[id^="cont-"], [id^="per-"]')) tick(); });
 
 document.addEventListener('change', async (e) => {
   if (e.target.matches('.stage-select')) {
@@ -858,6 +955,10 @@ function tick() {
     el.classList.toggle('full', pct >= 100);
   }
   for (const el of document.querySelectorAll('.rel[data-at]')) el.textContent = rel(+el.dataset.at);
+  for (const el of document.querySelectorAll('.packtotal[data-id]')) {
+    const c = document.getElementById(`cont-${el.dataset.id}`)?.value, per = document.getElementById(`per-${el.dataset.id}`)?.value;
+    el.textContent = c !== '' && per ? `= ${Number(c) * Number(per)} cookies` : '';
+  }
 }
 setInterval(tick, 1000);
 

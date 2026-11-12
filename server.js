@@ -41,7 +41,9 @@ function normalize(s) {
   s.ovens ||= {};
   s.counters ||= {};
   s.panHistory ||= {};
-  s.dismissedAlarms ||= []; // alarm keys someone tapped OK on (shared by all tablets)
+  s.dismissedAlarms ||= [];
+  s.packLog ||= []; // what was actually packed, kept until "start a new day"
+  for (const r of s.recipes) if (r.perContainer === undefined) r.perContainer = 6; // alarm keys someone tapped OK on (shared by all tablets)
   for (const b of s.batches) {
     if (b.coolGroups) continue;
     b.coolGroups = ['cooling', 'packing', 'done'].includes(b.stage) ? [{ pans: b.pans, outAt: b.t?.coolStart || Date.now(), ovenId: null }] : [];
@@ -176,6 +178,7 @@ function cleanRecipe(input, existing = {}) {
     name: String(input.name || '').trim() || 'Untitled cookie',
     color: /^#[0-9a-f]{6}$/i.test(input.color) ? input.color : existing.color || '#c8814a',
     yieldPerBatch: n(input.yieldPerBatch, 48),
+    perContainer: Math.round(n(input.perContainer, 6)), // cookies per container; 0 = not part of shares
     mixMinutes: n(input.mixMinutes, 15),
     ingredients: strList(input.ingredients),
     mixSteps: steps(input.mixSteps),
@@ -338,10 +341,16 @@ const actions = {
     b.t.packStart = Date.now();
     setStage(b, 'packing');
   },
-  finishPacking(b) {
+  finishPacking(b, { containers, perContainer }) {
     need(b, 'packing');
+    const c = Number(containers), per = Number(perContainer);
+    if (!Number.isInteger(c) || c < 0 || c > 10000) fail('Enter how many containers you packed (a whole number)');
+    if (!Number.isInteger(per) || per < 1 || per > 1000) fail('Enter how many cookies are in each container');
+    b.packed = { containers: c, perContainer: per, cookies: c * per };
+    state.packLog.push({ batchId: b.id, recipeId: b.recipeId, name: b.recipe.name, label: b.label, ...b.packed, at: Date.now() });
     b.t.done = Date.now();
     setStage(b, 'done', 'Done');
+    return { message: `${b.label}: ${c} container${c === 1 ? '' : 's'} × ${per} = ${c * per} cookies packed` };
   },
   toggleCheck(b, { stage, index }) {
     b.checks[stage] ||= [];
@@ -361,6 +370,10 @@ const actions = {
     const order = ['queued', 'mixing', 'chilling', 'ready_prep', 'prepping', 'pan_chilling', 'staged', 'baking', 'cooling', 'packing', 'done'];
     if (!order.includes(stage)) fail('Unknown stage');
     pullFromOvens(b);
+    if (stage !== 'done' && b.packed) { // un-doing a packed batch: take its count back out
+      state.packLog = state.packLog.filter((e) => e.batchId !== b.id);
+      delete b.packed;
+    }
     if (order.indexOf(stage) <= order.indexOf('staged')) { b.pansBaked = 0; b.coolGroups = []; }
     if (['cooling', 'packing', 'done'].includes(stage)) {
       const out = b.coolGroups.reduce((sum, g) => sum + g.pans, 0);
@@ -490,12 +503,19 @@ app.post('/api/batches/clear-all', route(() => {
   state.batches = [];
   state.counters = {};
   for (const o of Object.values(state.ovens)) o.current = null;
-  return { message: 'All batches cleared' };
+  state.packLog = [];
+  return { message: 'All batches and packed counts cleared' };
+}));
+// "Clear finished batches" keeps the packed counts; this resets them for a new day.
+app.post('/api/pack/reset', route(() => {
+  state.packLog = [];
+  return { message: 'Packed counts reset' };
 }));
 app.delete('/api/batches/:id', route((req) => {
   const b = findBatch(req.params.id);
   pullFromOvens(b);
   state.batches = state.batches.filter((x) => x !== b);
+  state.packLog = state.packLog.filter((e) => e.batchId !== b.id); // deleted by mistake / duplicate
 }));
 app.post('/api/batches/:id/:action', route((req) => {
   const fn = actions[req.params.action] || fail('Unknown action', 404);
@@ -576,6 +596,7 @@ app.put('/api/settings', route((req) => {
     prepMinutesPerPan: n(body.prepMinutesPerPan, cur.prepMinutesPerPan),
     ovenPansPerLoad: Math.round(n(body.ovenPansPerLoad, cur.ovenPansPerLoad, 1)),
     defaultPansPerBatch: Math.round(n(body.defaultPansPerBatch, cur.defaultPansPerBatch, 1)),
+    shares: Math.round(n(body.shares, cur.shares)), // containers of each cookie to pack (0 = not tracking)
     preheatMinutes: n(body.preheatMinutes, cur.preheatMinutes),
     heatUpMinutesPer25F: n(body.heatUpMinutesPer25F, cur.heatUpMinutesPer25F),
     coolDownMinutesPer25F: n(body.coolDownMinutesPer25F, cur.coolDownMinutesPer25F),

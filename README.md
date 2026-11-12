@@ -68,7 +68,18 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    the Cooling & Packing tablet ("Pans 1–2, out of Island Oven at 10:42") with
    its own cooling timer and its own post-bake checklist and timers. When every
    group has cooled, tap **All cooled → Pack**.
-8. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
+8. **Packing & shares** – set the *Number of shares* in Settings and
+   *Cookies per container* on each recipe (0 = not part of shares). Each
+   share gets one container of every cookie, so the goal is shares × cookies
+   per container (e.g. 10 shares × 6 = 60 chocolate chip). When a batch is
+   packed, the packer must enter the containers actually packed and the
+   cookies per container. The estimate (cookies per batch ÷ per container) is
+   shown only as a hint. The Cooling & Packing and Overview tablets show
+   packed vs. goal for each cookie, what's still needed, a projection
+   including batches in progress, and how many batches to add if you'll fall
+   short. *Clear finished batches* keeps the packed counts. Settings →
+   *Reset packed counts (new day)* zeroes them.
+9. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
    post-bake or step timer finishes, the tablet shows a red alarm and beeps
    every few seconds until someone taps **OK**. An alarm also stops by itself
    when it's handled: pans unloaded, time added, step checked off, batch moved

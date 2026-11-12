@@ -127,9 +127,27 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     ({ state } = await get());
     assert.deepStrictEqual(state.batches.find((x) => x.id === id).checks['finish-1'], [true], 'post-bake checks are per group');
     await act(id, 'finishCooling');
-    await act(id, 'finishPacking');
+    // Packing: the actual count is required (the estimate is only a hint)
     ({ state } = await get());
-    assert.strictEqual(state.batches.find((x) => x.id === id).stage, 'done');
+    assert.strictEqual(state.settings.shares, 10);
+    assert.strictEqual(state.recipes.find((x) => x.id === 'r-sugar').perContainer, 4);
+    await assert.rejects(act(id, 'finishPacking'), /how many containers/);
+    await assert.rejects(act(id, 'finishPacking', { containers: 8 }), /cookies are in each container/);
+    await assert.rejects(act(id, 'finishPacking', { containers: -1, perContainer: 4 }), /how many containers/);
+    r = await act(id, 'finishPacking', { containers: 8, perContainer: 4 });
+    assert.match(r.message, /8 containers × 4 = 32 cookies packed/);
+    ({ state } = await get());
+    b = state.batches.find((x) => x.id === id);
+    assert.strictEqual(b.stage, 'done');
+    assert.deepStrictEqual(b.packed, { containers: 8, perContainer: 4, cookies: 32 });
+    assert.deepStrictEqual(state.packLog.map((e) => [e.recipeId, e.containers, e.cookies]), [['r-sugar', 8, 32]]);
+    // Manager moves it back out of done -> its count is removed; packing again re-adds it
+    await act(id, 'setStage', { stage: 'packing' });
+    ({ state } = await get());
+    assert.strictEqual(state.packLog.length, 0);
+    await act(id, 'finishPacking', { containers: 9, perContainer: 4 });
+    ({ state } = await get());
+    assert.deepStrictEqual(state.packLog.map((e) => e.containers), [9]);
 
     // Multiple prep stations
     await assert.rejects(call('PUT', '/api/settings', { prepStations: '' }), /at least one prep station/);
@@ -251,7 +269,15 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     assert.strictEqual(state.settings.ovens.length, 3);
     assert.ok(plan.ovens.oven3, 'planner uses the new oven');
 
+    await call('PUT', '/api/settings', { shares: 12 });
+    ({ state } = await get());
+    assert.strictEqual(state.settings.shares, 12, 'shares editable in settings');
     await call('POST', '/api/batches/clear-done');
+    ({ state } = await get());
+    assert.strictEqual(state.packLog.length, 1, 'clearing finished batches keeps packed counts');
+    await call('POST', '/api/pack/reset');
+    ({ state } = await get());
+    assert.strictEqual(state.packLog.length, 0, 'new day resets packed counts');
     // Persistence
     await new Promise((res) => setTimeout(res, 500));
     const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'state.json'), 'utf8'));

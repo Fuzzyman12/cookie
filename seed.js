@@ -13,7 +13,8 @@ const defaultSettings = () => ({
     { id: 'oven2', name: 'Corner Oven' },
   ],
   ovenPansPerLoad: 2,
-  defaultPansPerBatch: 4, // planning estimate until Cookie Prep has reported real counts for a recipe
+  defaultPansPerBatch: 4,
+  shares: 10, // every share gets one container of each cookie (recipe sets cookies per container) // planning estimate until Cookie Prep has reported real counts for a recipe
   preheatMinutes: 15, // cold oven to temp
   heatUpMinutesPer25F: 3,
   coolDownMinutesPer25F: 6,
@@ -28,6 +29,7 @@ const recipes = () => [
     name: 'Chocolate Chip',
     color: '#b5733c',
     yieldPerBatch: 48,
+    perContainer: 6,
     mixMinutes: 20,
     ingredients: ['2 cups (454 g) butter, softened', '1½ cups brown sugar', '1 cup granulated sugar', '4 eggs', '1 Tbsp vanilla', '5 cups flour', '2 tsp baking soda', '2 tsp salt', '4 cups chocolate chips'],
     mixSteps: [step('Cream butter and sugars until fluffy', 3), step('Beat in eggs one at a time, then vanilla'), step('Whisk flour, baking soda and salt in a separate bowl'), step('Mix dry into wet on low just until combined'), step('Fold in chocolate chips')],
@@ -49,6 +51,7 @@ const recipes = () => [
     name: 'Iced Sugar Cookies',
     color: '#e58fb0',
     yieldPerBatch: 36,
+    perContainer: 4,
     mixMinutes: 15,
     ingredients: ['1½ cups butter, softened', '2 cups sugar', '4 eggs', '1 tsp vanilla', '5 cups flour', '2 tsp baking powder', '1 tsp salt'],
     mixSteps: [step('Cream butter and sugar', 3), step('Beat in eggs and vanilla'), step('Mix in dry ingredients on low'), step('Divide dough into 2 discs, wrap in plastic')],
@@ -70,6 +73,7 @@ const recipes = () => [
     name: 'Snickerdoodles',
     color: '#d9a441',
     yieldPerBatch: 36,
+    perContainer: 6,
     mixMinutes: 15,
     ingredients: ['1 cup butter', '1½ cups sugar', '2 eggs', '2¾ cups flour', '2 tsp cream of tartar', '1 tsp baking soda', '¼ tsp salt', 'Rolling: ¼ cup sugar + 1 Tbsp cinnamon'],
     mixSteps: [step('Cream butter and sugar', 2), step('Beat in eggs'), step('Mix in dry ingredients'), step('Mix cinnamon sugar in a shallow bowl for prep')],
@@ -91,6 +95,7 @@ const recipes = () => [
     name: 'Oatmeal Raisin',
     color: '#8a6a4f',
     yieldPerBatch: 48,
+    perContainer: 6,
     mixMinutes: 18,
     ingredients: ['1 cup butter', '1 cup brown sugar', '½ cup sugar', '2 eggs', '1 tsp vanilla', '1½ cups flour', '1 tsp baking soda', '1 tsp cinnamon', '3 cups oats', '1½ cups raisins'],
     mixSteps: [step('Cream butter and sugars', 3), step('Beat in eggs and vanilla'), step('Mix in flour, soda, cinnamon'), step('Stir in oats and raisins')],

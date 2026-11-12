@@ -276,3 +276,10 @@ body.alarming { animation: flash .8s infinite alternate; }
 .pstation h3 { font-size: 1.1rem; }
 .prow .ps-name { flex: 1; }
 .prow .ps-cap { width: 80px; }
+
+/* ---------- packing counts & shares */
+.perrow { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-top: .6rem; font-weight: 600; }
+.perrow input { width: 100px; text-align: center; font-size: 1.2rem; font-weight: 700; }
+.packtotal { font-size: 1.2rem; font-weight: 800; color: var(--ok); }
+.ok { color: var(--ok); font-weight: 700; }
+.warn-text { color: var(--warn); font-weight: 700; }
