@@ -34,7 +34,7 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
 ## How the day works
 
 1. **Recipes** – enter each recipe once: ingredients, mixing steps, chill time,
-   pans per batch and prep steps, oven temp, bake time and mid-bake reminders
+   prep steps, oven temp, bake time and mid-bake reminders
    (e.g. "rotate pans at 6 min"), cooling time, post-bake prep (icing, glaze),
    and packing steps. Any step can carry a timer.
 2. **Overview** – queue batches ("3 × Chocolate Chip"). Mark a batch *Rush* to
@@ -43,7 +43,12 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    timers. Tapping *Done* sends the batch to the next station, and tells the
    person where to put it ("Put it in the Outdoor Chiller", "Move 2 pans to
    Cooling & Packing – Center").
-4. **Alerts** – tablets beep, vibrate and flash when chilling, baking (and
+4. **Pan counts** – when Cookie Prep finishes a batch they enter how many pans
+   they actually filled, and the ovens are loaded from that real count. Until
+   then the planner estimates pans from the last 5 counts prep entered for that
+   recipe (or the *Pans per batch estimate* in Settings for a brand-new recipe).
+   Estimated counts show with a `~`.
+5. **Alerts** – tablets beep, vibrate and flash when chilling, baking (and
    bake reminders), cooling, oven preheats or step timers finish. Tap the
    screen once after loading the page to enable sound (browser rule).
 

@@ -34,8 +34,35 @@ function normalize(s) {
   s.batches ||= [];
   s.ovens ||= {};
   s.counters ||= {};
+  s.panHistory ||= {};
+  // Pans per batch used to live on the recipe; it's now entered at Cookie Prep.
+  // Keep any old value as the first data point for the estimate.
+  for (const r of s.recipes) {
+    if (r.pansPerBatch !== undefined) {
+      rememberPans(s, r.id, r.pansPerBatch, true);
+      delete r.pansPerBatch;
+    }
+  }
   for (const o of s.settings.ovens) s.ovens[o.id] ||= { targetTempF: null, readyAt: 0, current: null };
   return s;
+}
+
+// ---------------------------------------------------------------- pan estimates
+// Function declarations (not consts): normalize() calls these at startup.
+function rememberPans(s, recipeId, pans, onlyIfEmpty = false) {
+  const p = Math.round(Number(pans));
+  if (!Number.isFinite(p) || p < 1) return;
+  const list = (s.panHistory[recipeId] ||= []);
+  if (onlyIfEmpty && list.length) return;
+  list.push(p);
+  const keep = 5; // recent counts to average
+  if (list.length > keep) list.splice(0, list.length - keep);
+}
+/** Expected pans for a new batch: average of what Cookie Prep reported recently. */
+function estimatePans(s, recipeId) {
+  const list = s.panHistory[recipeId] || [];
+  if (!list.length) return Math.max(1, Math.round(Number(s.settings.defaultPansPerBatch) || 4));
+  return Math.max(1, Math.round(list.reduce((a, b) => a + b, 0) / list.length));
 }
 
 let saveTimer = null;
@@ -118,7 +145,6 @@ function cleanRecipe(input, existing = {}) {
     name: String(input.name || '').trim() || 'Untitled cookie',
     color: /^#[0-9a-f]{6}$/i.test(input.color) ? input.color : existing.color || '#c8814a',
     yieldPerBatch: n(input.yieldPerBatch, 48),
-    pansPerBatch: Math.round(n(input.pansPerBatch, 4, 1)),
     mixMinutes: n(input.mixMinutes, 15),
     ingredients: strList(input.ingredients),
     mixSteps: steps(input.mixSteps),
@@ -195,8 +221,13 @@ const actions = {
     b.t.prepStart = Date.now();
     setStage(b, 'prepping', 'Cookie Prep');
   },
-  finishPrep(b) {
+  finishPrep(b, { pans }) {
     need(b, 'prepping');
+    const filled = Number(pans);
+    if (!Number.isInteger(filled) || filled < 1 || filled > 200) fail('Enter how many pans were filled (a whole number, 1 or more)');
+    b.pans = filled;
+    b.pansEstimated = false;
+    rememberPans(state, b.recipeId, filled);
     b.t.prepEnd = Date.now();
     setStage(b, 'staged', 'Oven Staging Rack');
     return { message: `Put ${b.pans} pans of ${b.label} on the Oven Staging Rack` };
@@ -314,8 +345,11 @@ app.post('/api/recipes/import', route((req) => {
   let added = 0, updated = 0;
   for (const raw of list) {
     const i = state.recipes.findIndex((r) => r.id === raw.id);
-    if (i >= 0) { state.recipes[i] = cleanRecipe(raw, state.recipes[i]); updated++; }
-    else { state.recipes.push(cleanRecipe(raw, raw.id ? { id: String(raw.id) } : {})); added++; }
+    let recipe;
+    if (i >= 0) { recipe = state.recipes[i] = cleanRecipe(raw, state.recipes[i]); updated++; }
+    else { recipe = cleanRecipe(raw, raw.id ? { id: String(raw.id) } : {}); state.recipes.push(recipe); added++; }
+    // Files exported before pans moved to Cookie Prep: use it as a starting estimate.
+    if (raw.pansPerBatch !== undefined) rememberPans(state, recipe.id, raw.pansPerBatch, true);
   }
   return { message: `Imported ${added} new, updated ${updated}` };
 }));
@@ -325,6 +359,7 @@ app.post('/api/batches', route((req) => {
   const r = findRecipe(req.body.recipeId);
   const count = Math.min(50, Math.max(1, Math.floor(n(req.body.count, 1, 1))));
   const now = Date.now();
+  const pans = estimatePans(state, r.id);
   for (let k = 0; k < count; k++) {
     const number = (state.counters[r.id] = (state.counters[r.id] || 0) + 1);
     state.batches.push({
@@ -337,7 +372,8 @@ app.post('/api/batches', route((req) => {
       location: 'Queue',
       rush: !!req.body.rush,
       createdAt: now + k,
-      pans: r.pansPerBatch,
+      pans, // estimate until Cookie Prep enters the real count
+      pansEstimated: true,
       pansBaked: 0,
       pansInOven: 0,
       coolingArea: null,
@@ -413,6 +449,7 @@ app.put('/api/settings', route((req) => {
     prepStations: Math.round(n(body.prepStations, cur.prepStations, 1)),
     prepMinutesPerPan: n(body.prepMinutesPerPan, cur.prepMinutesPerPan),
     ovenPansPerLoad: Math.round(n(body.ovenPansPerLoad, cur.ovenPansPerLoad, 1)),
+    defaultPansPerBatch: Math.round(n(body.defaultPansPerBatch, cur.defaultPansPerBatch, 1)),
     preheatMinutes: n(body.preheatMinutes, cur.preheatMinutes),
     heatUpMinutesPer25F: n(body.heatUpMinutesPer25F, cur.heatUpMinutesPer25F),
     coolDownMinutesPer25F: n(body.coolDownMinutesPer25F, cur.coolDownMinutesPer25F),

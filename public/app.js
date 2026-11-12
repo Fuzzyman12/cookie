@@ -47,6 +47,12 @@ const P = (id) => (App.plan && App.plan.batches[id]) || { loads: [] };
 const inStage = (...st) => App.state.batches.filter((b) => st.includes(b.stage));
 const ovenName = (id) => (S().ovens.find((o) => o.id === id) || {}).name || id;
 const remainingPans = (b) => b.pans - b.pansBaked - b.pansInOven;
+// Until Cookie Prep enters the real count, a batch's pans are an estimate.
+const pansText = (b) => (b.pansEstimated ? `~${b.pans}` : `${b.pans}`);
+function panEstimate(recipeId) {
+  const list = (App.state.panHistory || {})[recipeId] || [];
+  return list.length ? Math.max(1, Math.round(list.reduce((a, x) => a + x, 0) / list.length)) : S().defaultPansPerBatch;
+}
 const chillDone = (b) => b.stage === 'chilling' && now() >= b.t.chillStart + b.recipe.chillMinutes * MIN;
 const readyForPrep = (b) => b.stage === 'ready_prep' || chillDone(b);
 
@@ -66,10 +72,10 @@ function title(b, extra = '') {
   return `<div class="btitle" style="--c:${esc(b.recipe.color)}"><span class="swatch"></span><span class="bname">${esc(b.label)}</span>${b.rush ? '<span class="badge rush">RUSH</span>' : ''}${extra}</div>`;
 }
 const chips = (items) => `<div class="chips">${items.filter(Boolean).map((c) => `<span class="chip">${c}</span>`).join('')}</div>`;
-const recipeChips = (r, pans) => chips([
+const recipeChips = (r, b) => chips([
   r.chillMinutes > 0 ? `❄️ chill ${r.chillMinutes}m` : 'no chill',
   `🔥 ${r.ovenTempF}°F · ${r.bakeMinutes}m`,
-  `${pans ?? r.pansPerBatch} pans`,
+  b ? `${pansText(b)} pans` : `usually ~${panEstimate(r.id)} pans`,
   `≈${r.yieldPerBatch} cookies`,
 ]);
 
@@ -126,7 +132,7 @@ pages.mixing = () => {
       ? free.map((st) => batchBtn(b, 'startMix', `Start at ${esc(st)}`, { station: st }, 'primary big')).join('')
       : `<div class="muted">All mix stations busy — next one frees up ${relTime(P(b.id).mixStart)}.</div>`;
     html += `<div class="card next" style="--c:${esc(r.color)}">
-      <div class="eyebrow">Up next to mix</div>${title(b)}${recipeChips(r, b.pans)}
+      <div class="eyebrow">Up next to mix</div>${title(b)}${recipeChips(r, b)}
       ${why(b)}
       <h4>Gather ingredients</h4>
       <ul class="ingredients">${r.ingredients.map((i) => `<li>${esc(i)}</li>`).join('') || '<li class="muted">No ingredients listed</li>'}</ul>
@@ -207,10 +213,18 @@ pages.prep = () => {
     const r = b.recipe;
     const target = b.t.prepStart + b.pans * r.prepMinutesPerPan * MIN;
     return `<div class="card active" style="--c:${esc(r.color)}"><div class="eyebrow">Prepping now</div>${title(b)}
-      <div class="meta">Make <b>${b.pans} pans</b> · ${timerUp(b.t.prepStart)} elapsed · planned ${fmtMin(target - b.t.prepStart)} ${progress(b.t.prepStart, target)}</div>
+      <div class="meta">Usually about <b>${b.pans} pans</b> · ${timerUp(b.t.prepStart)} elapsed · planned ${fmtMin(target - b.t.prepStart)} ${progress(b.t.prepStart, target)}</div>
       ${stepList(b, 'prep', r.prepSteps)}
       <div class="hint">Oven: ${r.ovenTempF}°F for ${r.bakeMinutes} min — oven loads ${S().ovenPansPerLoad} pans at a time.</div>
-      <div class="btnrow">${batchBtn(b, 'finishPrep', 'Done → Oven Staging Rack', {}, 'primary big')}</div></div>`;
+      <div class="pancount">
+        <label for="pans-${b.id}">How many pans did you fill?</label>
+        <div class="stepper">
+          ${btn('−', 'panStep', { target: `pans-${b.id}`, delta: -1, est: b.pans }, 'big')}
+          <input id="pans-${b.id}" type="number" min="1" max="200" step="1" inputmode="numeric" placeholder="~${b.pans}">
+          ${btn('+', 'panStep', { target: `pans-${b.id}`, delta: 1, est: b.pans }, 'big')}
+        </div>
+      </div>
+      <div class="btnrow">${btn('Done → Oven Staging Rack', 'finishPrep', { id: b.id }, 'primary big')}</div></div>`;
   }).join('');
 
   const next = queue[0];
@@ -218,13 +232,13 @@ pages.prep = () => {
     const r = next.recipe;
     const ready = readyForPrep(next);
     const p = P(next.id);
-    html += `<div class="card next" style="--c:${esc(r.color)}"><div class="eyebrow">Up next to prep</div>${title(next)}${recipeChips(r, next.pans)}
+    html += `<div class="card next" style="--c:${esc(r.color)}"><div class="eyebrow">Up next to prep</div>${title(next)}${recipeChips(r, next)}
       <div class="meta">${ready ? `Dough is ready in <b>${esc(next.location)}</b>.` : `${STAGE_LABEL[next.stage]}${next.stage === 'chilling' ? ` in ${esc(next.location)}` : ''} — ready ${fmtTime(p.prepReady)} (${relTime(p.prepReady)})`}</div>
       <h4>Prep steps</h4><ol class="steps preview">${r.prepSteps.map((s) => `<li><span class="stext">${esc(s.text)}</span></li>`).join('')}</ol>
       <div class="btnrow">${ready ? batchBtn(next, 'startPrep', 'Start prepping', {}, 'primary big') : ''}</div></div>`;
     const alsoReady = queue.slice(1).filter(readyForPrep);
     if (!ready && alsoReady.length) {
-      html += section('Ready now (out of planned order)', `<div class="grid">${alsoReady.map((b) => `<div class="card">${title(b)}${recipeChips(b.recipe, b.pans)}<div class="meta">In ${esc(b.location)}</div><div class="btnrow">${batchBtn(b, 'startPrep', 'Start prepping', {}, '')}</div></div>`).join('')}</div>`);
+      html += section('Ready now (out of planned order)', `<div class="grid">${alsoReady.map((b) => `<div class="card">${title(b)}${recipeChips(b.recipe, b)}<div class="meta">In ${esc(b.location)}</div><div class="btnrow">${batchBtn(b, 'startPrep', 'Start prepping', {}, '')}</div></div>`).join('')}</div>`);
     }
   } else if (!prepping.length) {
     html += empty('Nothing to prep yet.');
@@ -257,7 +271,7 @@ pages.baking = () => {
 
   const coming = App.plan.prepQueue.map(B).filter(Boolean).slice(0, 6);
   html += section('Coming from prep', coming.length ? table(['Batch', 'Status', 'On rack', 'Oven'], coming.map((b) => [
-    title(b), STAGE_LABEL[b.stage], `${fmtTime(P(b.id).prepEnd)} (${relTime(P(b.id).prepEnd)})`, `${b.recipe.ovenTempF}°F × ${b.pans} pans`,
+    title(b), STAGE_LABEL[b.stage], `${fmtTime(P(b.id).prepEnd)} (${relTime(P(b.id).prepEnd)})`, `${b.recipe.ovenTempF}°F × ${pansText(b)} pans`,
   ])) : empty('Nothing else coming.'));
   return html;
 };
@@ -344,7 +358,7 @@ pages.cooling = () => {
 
   const coming = inStage('baking', 'staged', 'prepping').sort((a, b) => P(a.id).bakeEnd - P(b.id).bakeEnd);
   html += section('Coming out of the ovens', coming.length ? table(['Batch', 'Pans out', 'Area', 'All out'], coming.map((b) => [
-    title(b), `${b.pansBaked} / ${b.pans}`, esc(b.coolingArea || '—'), `${fmtTime(P(b.id).bakeEnd)} (${relTime(P(b.id).bakeEnd)})`,
+    title(b), `${b.pansBaked} / ${pansText(b)}`, esc(b.coolingArea || '—'), `${fmtTime(P(b.id).bakeEnd)} (${relTime(P(b.id).bakeEnd)})`,
   ])) : empty('Nothing in the ovens.'));
 
   const done = inStage('done');
@@ -449,7 +463,7 @@ pages.recipes = () => {
 const STEP_GROUPS = [
   ['mix', 'Mixing', [['mixMinutes', 'Mixing time (min)'], ['ingredients', 'Ingredients (one per line)', 'textarea']], 'mixSteps', 'Mixing steps', 'minutes = optional step timer'],
   ['chill', 'Chilling', [['chillMinutes', 'Chill time (min, 0 = no chill)'], ['chillNotes', 'Chill notes', 'text']], null],
-  ['prep', 'Prep (panning)', [['pansPerBatch', 'Pans per batch'], ['prepMinutesPerPan', 'Prep minutes per pan']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
+  ['prep', 'Prep (panning)', [['prepMinutesPerPan', 'Prep minutes per pan']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
   ['bake', 'Baking', [['ovenTempF', 'Oven temp (°F)'], ['bakeMinutes', 'Bake time per load (min)']], 'bakeSteps', 'Bake reminders', 'minutes = alert at this many minutes into the bake'],
   ['cool', 'Cooling & finishing', [['coolMinutes', 'Cooling time (min)']], 'finishSteps', 'Post-bake prep (glaze, icing…)', 'minutes = optional step timer'],
   ['pack', 'Packing', [['packMinutes', 'Finishing + packing time (min)'], ['yieldPerBatch', 'Cookies per batch']], 'packSteps', 'Packing steps', 'minutes = optional step timer'],
@@ -462,7 +476,7 @@ function stepRow(s = {}) {
 pages.recipe = (id) => {
   App.locked = true; // don't wipe the form on live updates
   const r = id === 'new'
-    ? { name: '', color: '#c8814a', yieldPerBatch: 48, pansPerBatch: 4, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', prepMinutesPerPan: S().prepMinutesPerPan, prepSteps: [], ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
+    ? { name: '', color: '#c8814a', yieldPerBatch: 48, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', prepMinutesPerPan: S().prepMinutesPerPan, prepSteps: [], ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
     : App.state.recipes.find((x) => x.id === id);
   if (!r) return empty('Recipe not found. <a href="#/recipes">Back</a>');
   const field = ([k, label, type]) => type === 'textarea'
@@ -499,6 +513,7 @@ pages.settings = () => {
       ${numf('prepStations', 'People prepping at once')}
       ${numf('prepMinutesPerPan', 'Default prep min per pan')}
       ${numf('ovenPansPerLoad', 'Pans per oven load')}
+      ${numf('defaultPansPerBatch', 'Pans per batch estimate for new recipes')}
       ${numf('preheatMinutes', 'Preheat from cold (min)')}
       ${numf('heatUpMinutesPer25F', 'Heat up: min per +25°F')}
       ${numf('coolDownMinutesPer25F', 'Cool down: min per −25°F')}
@@ -538,6 +553,21 @@ const ACTIONS = {
   ovenTemp: (d) => api('POST', `/api/ovens/${d.oven}/temp`, { tempF: d.temp }),
   ovenTempInput: (d) => api('POST', `/api/ovens/${d.oven}/temp`, { tempF: $(`#mt-${d.oven}`).value }),
   ovenReady: (d) => api('POST', `/api/ovens/${d.oven}/ready`),
+  panStep: (d) => {
+    const input = document.getElementById(d.target);
+    const cur = input.value === '' ? Number(d.est) - Number(d.delta) : Number(input.value);
+    input.value = Math.max(1, cur + Number(d.delta));
+  },
+  finishPrep: (d) => {
+    const input = document.getElementById(`pans-${d.id}`);
+    const pans = Number(input.value);
+    if (input.value === '' || !Number.isInteger(pans) || pans < 1) {
+      toast('Enter how many pans you filled first', 'error');
+      input.focus();
+      return;
+    }
+    return api('POST', `/api/batches/${d.id}/finishPrep`, { pans });
+  },
   addBatches: () => api('POST', '/api/batches', { recipeId: $('#add-recipe').value, count: $('#add-count').value, rush: $('#add-rush').checked }),
   quickAdd: (d) => api('POST', '/api/batches', { recipeId: d.id, count: 1 }),
   deleteBatch: (d) => confirm('Delete this batch?') && api('DELETE', `/api/batches/${d.id}`),

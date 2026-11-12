@@ -53,22 +53,36 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     assert.match(r.message, /Outdoor Chiller/);
     await act(id, 'finishChill');
     await act(id, 'startPrep');
-    r = await act(id, 'finishPrep');
-    ({ state } = await get());
     let b = state.batches.find((x) => x.id === id);
+    assert.strictEqual(b.pans, 3, 'queued batch uses the estimate');
+    assert.strictEqual(b.pansEstimated, true);
+    await assert.rejects(act(id, 'finishPrep'), /how many pans/);
+    await assert.rejects(act(id, 'finishPrep', { pans: 0 }), /how many pans/);
+    await assert.rejects(act(id, 'finishPrep', { pans: 2.5 }), /how many pans/);
+    r = await act(id, 'finishPrep', { pans: 5 }); // prep actually filled 5
+    assert.match(r.message, /5 pans/);
+    ({ state } = await get());
+    b = state.batches.find((x) => x.id === id);
     assert.strictEqual(b.stage, 'staged');
+    assert.strictEqual(b.pans, 5);
+    assert.strictEqual(b.pansEstimated, false);
+    assert.deepStrictEqual(state.panHistory['r-sugar'], [3, 5]);
 
     await call('POST', '/api/ovens/oven1/temp', { tempF: 375 });
     await call('POST', '/api/ovens/oven1/ready');
     await act(id, 'loadOven', { ovenId: 'oven1' });
     await assert.rejects(act(id, 'loadOven', { ovenId: 'oven1' }), /already has/);
-    await act(id, 'loadOven', { ovenId: 'oven2' }); // 3 pans, 2 per load -> second load (1 pan)
+    await act(id, 'loadOven', { ovenId: 'oven2' }); // 5 pans, 2 per load: 2 + 2 + 1
     await call('POST', '/api/ovens/oven1/unload');
+    await call('POST', '/api/ovens/oven2/unload');
     ({ state } = await get());
     b = state.batches.find((x) => x.id === id);
     assert.strictEqual(b.stage, 'baking');
-    assert.strictEqual(b.pansBaked, 2);
-    r = await call('POST', '/api/ovens/oven2/unload');
+    assert.strictEqual(b.pansBaked, 4);
+    await act(id, 'loadOven', { ovenId: 'oven1' });
+    ({ state } = await get());
+    assert.strictEqual(state.ovens.oven1.current.pans, 1, 'last load has the leftover pan');
+    r = await call('POST', '/api/ovens/oven1/unload');
     ({ state, plan } = await get());
     b = state.batches.find((x) => x.id === id);
     assert.strictEqual(b.stage, 'cooling', 'all pans out -> cooling');
@@ -78,12 +92,26 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     ({ state } = await get());
     assert.strictEqual(state.batches.find((x) => x.id === id).stage, 'done');
 
+    // Next sugar batch is estimated from what prep reported (avg of 3 and 5)
+    await call('POST', '/api/batches', { recipeId: 'r-sugar', count: 1 });
+    ({ state, plan } = await get());
+    assert.strictEqual(state.batches.at(-1).pans, 4);
+
     // Guard rails
     await assert.rejects(act(plan.mixQueue[0], 'finishPrep'), /not prepping/);
 
     // Recipe CRUD + settings
     const { recipe } = await call('POST', '/api/recipes', { name: 'Test', ovenTempF: 325, chillMinutes: 0, mixSteps: [{ text: 'Stir', minutes: '2' }, { text: '' }] });
     assert.deepStrictEqual(recipe.mixSteps, [{ text: 'Stir', minutes: 2 }]);
+    assert.strictEqual(recipe.pansPerBatch, undefined, 'pans are no longer a recipe field');
+    await call('POST', '/api/batches', { recipeId: recipe.id, count: 1 });
+    ({ state } = await get());
+    assert.strictEqual(state.batches.at(-1).pans, 4, 'new recipe falls back to defaultPansPerBatch');
+    // Old export with pansPerBatch seeds the estimate
+    await call('POST', '/api/recipes/import', [{ id: 'r-old', name: 'Old', pansPerBatch: 6 }]);
+    ({ state } = await get());
+    assert.strictEqual(state.recipes.find((x) => x.id === 'r-old').pansPerBatch, undefined);
+    assert.deepStrictEqual(state.panHistory['r-old'], [6]);
     await call('PUT', '/api/settings', { ovens: 'A\nB\nC', ovenPansPerLoad: 3 });
     ({ state, plan } = await get());
     assert.strictEqual(state.settings.ovens.length, 3);
@@ -93,7 +121,7 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     // Persistence
     await new Promise((res) => setTimeout(res, 500));
     const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'state.json'), 'utf8'));
-    assert.strictEqual(saved.batches.length, 5);
+    assert.strictEqual(saved.batches.length, 7);
     console.log('✓ all flow tests passed');
   } finally {
     srv.kill('SIGTERM');
