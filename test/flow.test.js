@@ -131,6 +131,43 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     ({ state } = await get());
     assert.strictEqual(state.batches.find((x) => x.id === id).stage, 'done');
 
+    // Chilling panned dough after prep (seed: Oatmeal Raisin chills pans 20 min)
+    await call('POST', '/api/batches', { recipeId: 'r-oatmeal', count: 2 });
+    ({ state } = await get());
+    const [oat1, oat2] = state.batches.filter((x) => x.recipeId === 'r-oatmeal').map((x) => x.id);
+    for (const oid of [oat1, oat2]) {
+      await act(oid, 'startMix');
+      await act(oid, 'finishMix'); // no dough chill -> straight to prep
+      await act(oid, 'startPrep');
+    }
+    r = await act(oat1, 'finishPrep', { pans: 4, to: 'Outdoor Chiller' });
+    assert.match(r.message, /Outdoor Chiller — chill 20 min before baking/);
+    ({ state, plan } = await get());
+    let oat = state.batches.find((x) => x.id === oat1);
+    assert.strictEqual(oat.stage, 'pan_chilling');
+    assert.strictEqual(oat.location, 'Outdoor Chiller');
+    const chillEnd = oat.t.panChillStart + 20 * 60000;
+    assert.ok(plan.batches[oat1].loads.every((l) => l.start >= chillEnd), 'planner waits for the pan chill');
+    assert.strictEqual(plan.batches[oat1].panChillEnd, chillEnd);
+    r = await act(oat1, 'finishPanChill');
+    assert.match(r.message, /Oven Staging Rack/);
+    ({ state } = await get());
+    assert.strictEqual(state.batches.find((x) => x.id === oat1).stage, 'staged');
+    // Default chill location, and the baker can load straight from the chiller
+    await act(oat2, 'finishPrep', { pans: 2 });
+    ({ state } = await get());
+    oat = state.batches.find((x) => x.id === oat2);
+    assert.deepStrictEqual([oat.stage, oat.location], ['pan_chilling', 'Fridge']);
+    await act(oat2, 'loadOven', { ovenId: 'oven1' });
+    ({ state } = await get());
+    oat = state.batches.find((x) => x.id === oat2);
+    assert.strictEqual(oat.stage, 'baking');
+    assert.ok(oat.t.panChillEnd);
+    await call('POST', '/api/ovens/oven1/unload');
+    // Recipe without pan chill still goes straight to the rack
+    const noChill = state.recipes.find((x) => x.id === 'r-snickerdoodle');
+    assert.ok(!noChill.panChillMinutes);
+
     // Alarm dismissals are shared by all tablets
     await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2', 'cool-x-0-5'] });
     await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2'] });
@@ -176,7 +213,7 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     // Persistence
     await new Promise((res) => setTimeout(res, 500));
     const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'state.json'), 'utf8'));
-    assert.strictEqual(saved.batches.length, 7);
+    assert.strictEqual(saved.batches.length, 9);
     console.log('✓ all flow tests passed');
   } finally {
     srv.kill('SIGTERM');

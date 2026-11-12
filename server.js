@@ -157,6 +157,8 @@ function cleanRecipe(input, existing = {}) {
     chillNotes: String(input.chillNotes || ''),
     prepMinutesPerPan: n(input.prepMinutesPerPan, S().prepMinutesPerPan),
     prepSteps: steps(input.prepSteps),
+    panChillMinutes: n(input.panChillMinutes, 0), // chill the panned dough before baking (0 = none)
+    panChillNotes: String(input.panChillNotes || ''),
     ovenTempF: n(input.ovenTempF, 350, 100),
     bakeMinutes: n(input.bakeMinutes, 10, 1),
     bakeSteps: steps(input.bakeSteps),
@@ -250,7 +252,7 @@ const actions = {
     b.t.prepStart = Date.now();
     setStage(b, 'prepping', 'Cookie Prep');
   },
-  finishPrep(b, { pans }) {
+  finishPrep(b, { pans, to }) {
     need(b, 'prepping');
     const filled = Number(pans);
     if (!Number.isInteger(filled) || filled < 1 || filled > 200) fail('Enter how many pans were filled (a whole number, 1 or more)');
@@ -258,11 +260,24 @@ const actions = {
     b.pansEstimated = false;
     rememberPans(state, b.recipeId, filled);
     b.t.prepEnd = Date.now();
+    const panChill = Number(b.recipe.panChillMinutes) || 0;
+    if (panChill > 0 && to !== 'rack') {
+      const loc = to || S().chillLocations[0] || 'Fridge';
+      b.t.panChillStart = Date.now();
+      setStage(b, 'pan_chilling', loc);
+      return { message: `Put ${filled} pans of ${b.label} in the ${loc} — chill ${panChill} min before baking` };
+    }
     setStage(b, 'staged', 'Oven Staging Rack');
-    return { message: `Put ${b.pans} pans of ${b.label} on the Oven Staging Rack` };
+    return { message: `Put ${filled} pans of ${b.label} on the Oven Staging Rack` };
+  },
+  finishPanChill(b) {
+    need(b, 'pan_chilling');
+    b.t.panChillEnd = Date.now();
+    setStage(b, 'staged', 'Oven Staging Rack');
+    return { message: `Move ${b.pans} pans of ${b.label} to the Oven Staging Rack` };
   },
   loadOven(b, { ovenId }) {
-    need(b, 'staged', 'baking');
+    need(b, 'staged', 'baking', 'pan_chilling'); // baker may load straight from the chiller
     const o = oven(ovenId);
     if (o.current) fail(`${ovenName(ovenId)} already has ${o.current.label} in it`, 409);
     const cap = Math.max(1, Math.floor(n(S().ovenPansPerLoad, 2, 1)));
@@ -277,7 +292,8 @@ const actions = {
       extraMinutes: 0, // added by the baker while baking
     };
     b.pansInOven += pans;
-    if (b.stage === 'staged') {
+    if (b.stage === 'pan_chilling') b.t.panChillEnd = Date.now();
+    if (b.stage === 'staged' || b.stage === 'pan_chilling') {
       b.t.bakeStart = Date.now();
       setStage(b, 'baking', 'Ovens');
     }
@@ -307,7 +323,7 @@ const actions = {
   // Manager override from the Overview page, for fixing mistakes.
   setStage(b, { stage }) {
     const now = Date.now();
-    const order = ['queued', 'mixing', 'chilling', 'ready_prep', 'prepping', 'staged', 'baking', 'cooling', 'packing', 'done'];
+    const order = ['queued', 'mixing', 'chilling', 'ready_prep', 'prepping', 'pan_chilling', 'staged', 'baking', 'cooling', 'packing', 'done'];
     if (!order.includes(stage)) fail('Unknown stage');
     pullFromOvens(b);
     if (order.indexOf(stage) <= order.indexOf('staged')) { b.pansBaked = 0; b.coolGroups = []; }
@@ -326,6 +342,7 @@ const actions = {
       case 'chilling': b.t.chillStart = now; loc = S().chillLocations[0]; break;
       case 'ready_prep': loc = 'Cookie Prep'; break;
       case 'prepping': b.t.prepStart = now; loc = 'Cookie Prep'; break;
+      case 'pan_chilling': b.t.panChillStart = now; loc = S().chillLocations[0]; break;
       case 'staged': loc = 'Oven Staging Rack'; break;
       case 'baking': b.t.bakeStart = now; loc = 'Ovens'; break;
       case 'cooling': b.pansBaked = b.pans; b.t.coolStart ||= now; b.t.allOut = now; loc = b.coolingArea ||= pickCoolingArea(); break;

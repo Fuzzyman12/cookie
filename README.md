@@ -53,14 +53,21 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    then the planner estimates pans from the last 5 counts prep entered for that
    recipe (or the *Pans per batch estimate* in Settings for a brand-new recipe).
    Estimated counts show with a `~`.
-5. **Baking** – the oven card has **+1 / +5 / +10 min** buttons and a custom
+5. **Chilling after prep** – for doughs that should chill on the pans before
+   baking, set *Chill pans after prep* on the recipe. Cookie Prep then sends
+   the finished pans to the Fridge or Outdoor Chiller instead of the staging
+   rack, and the Chilling tablet counts them down. The Baking tablet shows them
+   on the staging rack with where they are and when they'll be ready, and the
+   planner holds those loads until the chill is done. The baker can load them
+   early with a confirmation.
+6. **Baking** – the oven card has **+1 / +5 / +10 min** buttons and a custom
    box to add bake time to the load in the oven.
-6. **Cooling** – pans go into cooling the moment they're unloaded, even if
+7. **Cooling** – pans go into cooling the moment they're unloaded, even if
    the rest of the batch is still baking. Each oven load gets its own group on
    the Cooling & Packing tablet ("Pans 1–2, out of Island Oven at 10:42") with
    its own cooling timer and its own post-bake checklist and timers. When every
    group has cooled, tap **All cooled → Pack**.
-7. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
+8. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
    post-bake or step timer finishes, the tablet shows a red alarm and beeps
    every few seconds until someone taps **OK**. An alarm also stops by itself
    when it's handled: pans unloaded, time added, step checked off, batch moved

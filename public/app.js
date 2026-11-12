@@ -20,9 +20,9 @@ const ADMIN = [
   { key: 'recipes', name: 'Recipes', icon: '📖' },
   { key: 'settings', name: 'Settings', icon: '⚙️' },
 ];
-const STAGES = ['queued', 'mixing', 'chilling', 'ready_prep', 'prepping', 'staged', 'baking', 'cooling', 'packing', 'done'];
+const STAGES = ['queued', 'mixing', 'chilling', 'ready_prep', 'prepping', 'pan_chilling', 'staged', 'baking', 'cooling', 'packing', 'done'];
 const STAGE_LABEL = {
-  queued: 'Queued', mixing: 'Mixing', chilling: 'Chilling', ready_prep: 'Waiting for prep', prepping: 'Prepping',
+  queued: 'Queued', mixing: 'Mixing', chilling: 'Chilling', ready_prep: 'Waiting for prep', prepping: 'Prepping', pan_chilling: 'Pans chilling',
   staged: 'On staging rack', baking: 'Baking', cooling: 'Cooling', packing: 'Finishing & packing', done: 'Done',
 };
 
@@ -56,6 +56,10 @@ function panEstimate(recipeId) {
 }
 const chillDone = (b) => b.stage === 'chilling' && now() >= b.t.chillStart + b.recipe.chillMinutes * MIN;
 const readyForPrep = (b) => b.stage === 'ready_prep' || chillDone(b);
+const panChillEnd = (b) => b.t.panChillStart + (Number(b.recipe.panChillMinutes) || 0) * MIN;
+const panChillDone = (b) => b.stage === 'pan_chilling' && now() >= panChillEnd(b);
+// Pans the baker can load now (pans still chilling can be loaded early, with a confirm).
+const loadable = (b) => (['staged', 'baking'].includes(b.stage) && remainingPans(b) > 0) || b.stage === 'pan_chilling';
 
 // ------------------------------------------------------------------ UI snippets
 const btn = (label, act, data = {}, cls = '') =>
@@ -75,7 +79,8 @@ function title(b, extra = '') {
 }
 const chips = (items) => `<div class="chips">${items.filter(Boolean).map((c) => `<span class="chip">${c}</span>`).join('')}</div>`;
 const recipeChips = (r, b) => chips([
-  r.chillMinutes > 0 ? `❄️ chill ${r.chillMinutes}m` : 'no chill',
+  r.chillMinutes > 0 ? `❄️ chill ${r.chillMinutes}m` : (r.panChillMinutes > 0 ? '' : 'no chill'),
+  r.panChillMinutes > 0 ? `❄️ chill pans ${r.panChillMinutes}m` : '',
   `🔥 ${r.ovenTempF}°F · ${r.bakeMinutes}m`,
   b ? `${pansText(b)} pans` : `usually ~${panEstimate(r.id)} pans`,
   `≈${r.yieldPerBatch} cookies`,
@@ -112,9 +117,9 @@ pages.home = () => `
 function stationCount(key) {
   const c = {
     mixing: inStage('queued', 'mixing').length,
-    chilling: inStage('chilling').length,
+    chilling: inStage('chilling', 'pan_chilling').length,
     prep: inStage('ready_prep', 'prepping').length + inStage('chilling').filter(chillDone).length,
-    baking: inStage('staged', 'baking').length,
+    baking: inStage('staged', 'baking').length + inStage('pan_chilling').filter(panChillDone).length,
     cooling: inStage('cooling', 'packing').length,
   }[key];
   return c ? `${c} active` : '';
@@ -181,12 +186,24 @@ pages.chilling = () => {
   const chilling = inStage('chilling').sort((a, b) => P(a.id).prepStart - P(b.id).prepStart);
   const prepRank = new Map(App.plan.prepQueue.map((id, i) => [id, i + 1]));
   let html = '';
+  const panChilling = inStage('pan_chilling').sort((a, b) => panChillEnd(a) - panChillEnd(b));
   const byLoc = {};
-  for (const b of chilling) (byLoc[b.location] ||= []).push(b);
+  for (const b of [...chilling, ...panChilling]) (byLoc[b.location] ||= []).push(b);
   const locs = [...new Set([...S().chillLocations, ...Object.keys(byLoc)])];
 
   html += locs.map((loc) => section(`❄️ ${esc(loc)}`, (byLoc[loc] || []).length ? `<div class="grid">${byLoc[loc].map((b) => {
     const r = b.recipe;
+    if (b.stage === 'pan_chilling') {
+      const end = panChillEnd(b);
+      const ready = now() >= end;
+      return `<div class="card ${ready ? 'ready' : 'active'}" style="--c:${esc(r.color)}"><div class="eyebrow">Panned dough · ${b.pans} pans · before baking</div>${title(b)}
+        <div class="bigtimer">${timerDown(end, `panchill-${b.id}-${b.t.panChillStart}`, `${b.label} pans are chilled — move them to the Oven Staging Rack`)}</div>
+        ${progress(b.t.panChillStart, end)}
+        <div class="meta">In since ${fmtTime(b.t.panChillStart)} · ${r.panChillMinutes} min chill · bakes at ${r.ovenTempF}°F</div>
+        ${r.panChillNotes ? `<div class="hint">${esc(r.panChillNotes)}</div>` : ''}
+        <div class="btnrow">${batchBtn(b, 'finishPanChill', 'Move to Oven Staging Rack →', {}, ready ? 'primary big' : '', ready ? '' : `${b.label} pans still have chill time left. Move them anyway?`)}</div>
+      </div>`;
+    }
     const end = b.t.chillStart + r.chillMinutes * MIN;
     const ready = now() >= end;
     return `<div class="card ${ready ? 'ready' : 'active'}" style="--c:${esc(r.color)}">${title(b)}
@@ -198,9 +215,15 @@ pages.chilling = () => {
     </div>`;
   }).join('')}</div>` : empty('Empty'))).join('');
 
-  const incoming = [...inStage('mixing'), ...App.plan.mixQueue.map(B).filter(Boolean)].filter((b) => b.recipe.chillMinutes > 0).slice(0, 8);
-  html += section('Coming to chill', incoming.length ? table(['Batch', 'Status', 'Arrives', 'Chill'], incoming.map((b) => [
-    title(b), STAGE_LABEL[b.stage], `${fmtTime(P(b.id).mixEnd)} (${relTime(P(b.id).mixEnd)})`, `${b.recipe.chillMinutes} min`,
+  // Dough coming from Mixing, and panned dough coming from Cookie Prep.
+  const incoming = [
+    ...[...inStage('mixing'), ...App.plan.mixQueue.map(B).filter(Boolean)].filter((b) => b.recipe.chillMinutes > 0)
+      .map((b) => ({ b, what: 'Dough (bowl)', at: P(b.id).mixEnd, mins: b.recipe.chillMinutes })),
+    ...App.plan.prepQueue.map(B).filter((b) => b && b.recipe.panChillMinutes > 0)
+      .map((b) => ({ b, what: `Pans (~${b.pans})`, at: P(b.id).prepEnd, mins: b.recipe.panChillMinutes })),
+  ].sort((x, y) => x.at - y.at).slice(0, 10);
+  html += section('Coming to chill', incoming.length ? table(['Batch', 'What', 'Status', 'Arrives', 'Chill'], incoming.map(({ b, what, at, mins }) => [
+    title(b), what, STAGE_LABEL[b.stage], `${fmtTime(at)} (${relTime(at)})`, `${mins} min`,
   ])) : empty('Nothing headed to the chillers.'));
   return html;
 };
@@ -226,7 +249,10 @@ pages.prep = () => {
           ${btn('+', 'panStep', { target: `pans-${b.id}`, delta: 1, est: b.pans }, 'big')}
         </div>
       </div>
-      <div class="btnrow">${btn('Done → Oven Staging Rack', 'finishPrep', { id: b.id }, 'primary big')}</div></div>`;
+      ${r.panChillMinutes > 0
+        ? `<div class="hint">❄️ Chill the pans ${r.panChillMinutes} min before baking. ${esc(r.panChillNotes)}</div>
+           <div class="btnrow">${S().chillLocations.map((loc) => btn(`Done → ${esc(loc)}`, 'finishPrep', { id: b.id, to: loc }, 'primary big')).join('')}</div>`
+        : `<div class="btnrow">${btn('Done → Oven Staging Rack', 'finishPrep', { id: b.id }, 'primary big')}</div>`}</div>`;
   }).join('');
 
   const next = queue[0];
@@ -257,23 +283,28 @@ pages.prep = () => {
 pages.baking = () => {
   let html = `<div class="grid ovens">${S().ovens.map(ovenCard).join('')}</div>`;
 
-  const staged = inStage('staged', 'baking').filter((b) => remainingPans(b) > 0)
+  const staged = App.state.batches.filter(loadable)
     .sort((a, b) => (P(a.id).loads.find((l) => !l.inOven)?.start ?? 0) - (P(b.id).loads.find((l) => !l.inOven)?.start ?? 0));
   html += section('Oven Staging Rack', staged.length ? `<div class="grid">${staged.map((b) => {
     const next = P(b.id).loads.find((l) => !l.inOven);
-    return `<div class="card" style="--c:${esc(b.recipe.color)}">${title(b)}
+    const chilling = b.stage === 'pan_chilling' && !panChillDone(b);
+    const where = b.stage === 'pan_chilling'
+      ? `<div class="hint">❄️ In the <b>${esc(b.location)}</b> — ${chilling ? `chilled in ${timerDown(panChillEnd(b), '', '', 'good')}` : 'chilled, ready to bake'}</div>` : '';
+    return `<div class="card ${chilling ? 'idle' : ''}" style="--c:${esc(b.recipe.color)}">${title(b)}
       <div class="meta"><b>${remainingPans(b)}</b> of ${b.pans} pans waiting · ${b.recipe.ovenTempF}°F · ${b.recipe.bakeMinutes} min${next ? ` · planned: ${esc(ovenName(next.ovenId))} ${fmtTime(next.start)}` : ''}</div>
+      ${where}
       <div class="btnrow">${S().ovens.map((o) => {
         const os = App.state.ovens[o.id] || {};
         if (os.current) return `<button class="btn" disabled>${esc(o.name)} busy</button>`;
         const mismatch = os.targetTempF !== b.recipe.ovenTempF;
-        return btn(`Load into ${esc(o.name)}`, 'batch', { id: b.id, action: 'loadOven', body: { ovenId: o.id }, ...(mismatch ? { confirm: `${o.name} is set to ${os.targetTempF ?? 'off'}${os.targetTempF ? '°F' : ''}, but ${b.label} bakes at ${b.recipe.ovenTempF}°F. Load anyway?` } : {}) }, next?.ovenId === o.id && !mismatch ? 'primary' : '');
+        const warn = [chilling ? `${b.label} pans haven't finished chilling.` : '', mismatch ? `${o.name} is set to ${os.targetTempF ?? 'off'}${os.targetTempF ? '°F' : ''}, but ${b.label} bakes at ${b.recipe.ovenTempF}°F.` : ''].filter(Boolean).join(' ');
+        return btn(`Load into ${esc(o.name)}`, 'batch', { id: b.id, action: 'loadOven', body: { ovenId: o.id }, ...(warn ? { confirm: `${warn} Load anyway?` } : {}) }, next?.ovenId === o.id && !warn ? 'primary' : '');
       }).join('')}</div></div>`;
   }).join('')}</div>` : empty('Rack is empty.'));
 
   const coming = App.plan.prepQueue.map(B).filter(Boolean).slice(0, 6);
   html += section('Coming from prep', coming.length ? table(['Batch', 'Status', 'On rack', 'Oven'], coming.map((b) => [
-    title(b), STAGE_LABEL[b.stage], `${fmtTime(P(b.id).prepEnd)} (${relTime(P(b.id).prepEnd)})`, `${b.recipe.ovenTempF}°F × ${pansText(b)} pans`,
+    title(b), STAGE_LABEL[b.stage], `${fmtTime(P(b.id).panChillEnd ?? P(b.id).prepEnd)} (${relTime(P(b.id).panChillEnd ?? P(b.id).prepEnd)})${b.recipe.panChillMinutes > 0 ? ' <span class="muted">after pan chill</span>' : ''}`, `${b.recipe.ovenTempF}°F × ${pansText(b)} pans`,
   ])) : empty('Nothing else coming.'));
   return html;
 };
@@ -316,13 +347,16 @@ function ovenCard(o) {
       ${next && next.temp !== cur.tempF ? `<div class="hint warn">After this load: change to <b>${next.temp}°F</b> for ${esc(B(next.batchId)?.label || '')}</div>` : ''}`;
   } else if (next) {
     const nb = B(next.batchId);
-    const onRack = nb && ['staged', 'baking'].includes(nb.stage) && remainingPans(nb) > 0;
+    const onRack = nb && loadable(nb);
+    const stillChilling = nb && nb.stage === 'pan_chilling' && !panChillDone(nb);
     const needTemp = os.targetTempF !== next.temp;
     body = `<div class="eyebrow">Next load</div>${nb ? title(nb) : ''}
       <div class="meta">${next.pans} pan${next.pans > 1 ? 's' : ''} at <b>${next.temp}°F</b> · planned ${fmtTime(next.start)} (${relTime(next.start)})</div>
       <div class="btnrow">
         ${needTemp ? btn(`Set oven to ${next.temp}°F`, 'ovenTemp', { oven: o.id, temp: next.temp }, `${next.changeoverAt && next.changeoverAt > now() + 60000 ? '' : 'primary'} big`) : ''}
-        ${onRack ? btn(`Load ${esc(nb.label)}`, 'batch', { id: nb.id, action: 'loadOven', body: { ovenId: o.id }, ...(needTemp || heating ? { confirm: `${o.name} isn't at ${next.temp}°F yet. Load anyway?` } : {}) }, needTemp || heating ? 'big' : 'primary big') : `<span class="muted">Waiting on prep — on rack ${nb ? relTime(P(nb.id).prepEnd) : ''}</span>`}
+        ${onRack && !stillChilling ? btn(`Load ${esc(nb.label)}`, 'batch', { id: nb.id, action: 'loadOven', body: { ovenId: o.id }, ...(needTemp || heating ? { confirm: `${o.name} isn't at ${next.temp}°F yet. Load anyway?` } : {}) }, needTemp || heating ? 'big' : 'primary big')
+          : stillChilling ? `<span class="muted">Pans chilling in ${esc(nb.location)} — ready ${relTime(panChillEnd(nb))}</span>`
+          : `<span class="muted">Waiting on prep — ready ${nb ? relTime(P(nb.id).panChillEnd ?? P(nb.id).prepEnd) : ''}</span>`}
       </div>
       ${needTemp && next.changeoverAt ? `<div class="hint">Start changing temp at ${fmtTime(next.changeoverAt)}${next.changeoverAt > now() ? ` (${relTime(next.changeoverAt)})` : ' — now'}.</div>` : ''}`;
   } else {
@@ -405,7 +439,7 @@ pages.cooling = () => {
       <div class="btnrow">${batchBtn(b, 'finishPacking', 'Packed ✓ Done', {}, 'primary big')}</div></div>`;
   }).join('')}</div>` : empty('Nothing being packed.'));
 
-  const coming = inStage('baking', 'staged', 'prepping').filter((b) => !b.coolGroups.length).sort((a, b) => P(a.id).bakeEnd - P(b.id).bakeEnd);
+  const coming = inStage('baking', 'staged', 'pan_chilling', 'prepping').filter((b) => !b.coolGroups.length).sort((a, b) => P(a.id).bakeEnd - P(b.id).bakeEnd);
   html += section('Coming out of the ovens', coming.length ? table(['Batch', 'Status', 'Area', 'First pans out'], coming.map((b) => {
     const firstOut = Math.min(...P(b.id).loads.map((l) => l.end));
     return [title(b), STAGE_LABEL[b.stage], esc(b.coolingArea || '—'), Number.isFinite(firstOut) ? `${fmtTime(firstOut)} (${relTime(firstOut)})` : '—'];
@@ -463,10 +497,11 @@ function gantt(active) {
     const mixS = p.mixStart ?? t.mixStart, mixE = p.mixEnd ?? t.mixEnd;
     const chillE = b.recipe.chillMinutes ? (p.chillEnd ?? t.chillEnd ?? t.prepStart) : null;
     const prepS = p.prepStart ?? t.prepStart, prepE = p.prepEnd ?? t.prepEnd;
+    const panChillE = b.recipe.panChillMinutes ? (p.panChillEnd ?? t.panChillEnd) : null;
     const bakeS = t.bakeStart ?? p.bakeStart, bakeE = p.bakeEnd ?? t.coolStart;
     const coolE = p.coolEnd ?? t.packStart;
     return `<div class="grow"><div class="glabel">${title(b)}</div><div class="gtrack">
-      ${bar(mixS, mixE, 'mix', 'mix')}${chillE ? bar(mixE, chillE, 'chill', 'chill') : ''}${bar(prepS, prepE, 'prep', 'prep')}
+      ${bar(mixS, mixE, 'mix', 'mix')}${chillE ? bar(mixE, chillE, 'chill', 'chill') : ''}${bar(prepS, prepE, 'prep', 'prep')}${panChillE ? bar(prepE, panChillE, 'chill', 'chill') : ''}
       ${bar(bakeS, bakeE, 'bake', 'bake')}${bar(bakeE, coolE, 'cool', 'cool')}${bar(coolE, p.doneAt, 'pack', 'pack')}
     </div></div>`;
   }).join('');
@@ -513,7 +548,7 @@ pages.recipes = () => {
 const STEP_GROUPS = [
   ['mix', 'Mixing', [['mixMinutes', 'Mixing time (min)'], ['ingredients', 'Ingredients (one per line)', 'textarea']], 'mixSteps', 'Mixing steps', 'minutes = optional step timer'],
   ['chill', 'Chilling', [['chillMinutes', 'Chill time (min, 0 = no chill)'], ['chillNotes', 'Chill notes', 'text']], null],
-  ['prep', 'Prep (panning)', [['prepMinutesPerPan', 'Prep minutes per pan']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
+  ['prep', 'Prep (panning)', [['prepMinutesPerPan', 'Prep minutes per pan'], ['panChillMinutes', 'Chill pans after prep (min, 0 = no chill)'], ['panChillNotes', 'Pan chill notes', 'text']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
   ['bake', 'Baking', [['ovenTempF', 'Oven temp (°F)'], ['bakeMinutes', 'Bake time per load (min)']], 'bakeSteps', 'Bake reminders', 'minutes = alert at this many minutes into the bake'],
   ['cool', 'Cooling & finishing', [['coolMinutes', 'Cooling time (min)']], 'finishSteps', 'Post-bake prep (glaze, icing…)', 'minutes = do this many minutes after the pans come out of the oven'],
   ['pack', 'Packing', [['packMinutes', 'Finishing + packing time (min)'], ['yieldPerBatch', 'Cookies per batch']], 'packSteps', 'Packing steps', 'minutes = optional step timer'],
@@ -526,7 +561,7 @@ function stepRow(s = {}) {
 pages.recipe = (id) => {
   App.locked = true; // don't wipe the form on live updates
   const r = id === 'new'
-    ? { name: '', color: '#c8814a', yieldPerBatch: 48, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', prepMinutesPerPan: S().prepMinutesPerPan, prepSteps: [], ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
+    ? { name: '', color: '#c8814a', yieldPerBatch: 48, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', prepMinutesPerPan: S().prepMinutesPerPan, prepSteps: [], panChillMinutes: 0, panChillNotes: '', ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
     : App.state.recipes.find((x) => x.id === id);
   if (!r) return empty('Recipe not found. <a href="#/recipes">Back</a>');
   const field = ([k, label, type]) => type === 'textarea'
@@ -625,7 +660,7 @@ const ACTIONS = {
       input.focus();
       return;
     }
-    return api('POST', `/api/batches/${d.id}/finishPrep`, { pans });
+    return api('POST', `/api/batches/${d.id}/finishPrep`, { pans, to: d.to });
   },
   addBatches: () => api('POST', '/api/batches', { recipeId: $('#add-recipe').value, count: $('#add-count').value, rush: $('#add-rush').checked }),
   quickAdd: (d) => api('POST', '/api/batches', { recipeId: d.id, count: 1 }),

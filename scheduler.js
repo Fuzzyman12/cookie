@@ -29,6 +29,7 @@ function durations(recipe, settings) {
   return {
     mix: num(r.mixMinutes, 15) * MIN,
     chill: Math.max(0, num(r.chillMinutes, 0)) * MIN,
+    panChill: Math.max(0, num(r.panChillMinutes, 0)) * MIN, // after prep, before baking
     prepPerPan: num(r.prepMinutesPerPan, num(settings.prepMinutesPerPan, 4)) * MIN,
     bake: num(r.bakeMinutes, 10) * MIN,
     cool: num(r.coolMinutes, 15) * MIN,
@@ -136,7 +137,11 @@ function simulate(ctx, order) {
   const loads = [];
   for (const b of active) {
     if (['cooling', 'packing', 'done'].includes(b.stage)) continue;
-    const ready = b.stage === 'staged' || b.stage === 'baking' ? now : P[b.id].prepEnd;
+    let ready;
+    if (b.stage === 'staged' || b.stage === 'baking') ready = now;
+    else if (b.stage === 'pan_chilling') ready = Math.max(now, (b.t.panChillStart || now) + b.d.panChill);
+    else ready = P[b.id].prepEnd + b.d.panChill;
+    if (b.d.panChill && b.stage !== 'staged' && b.stage !== 'baking') P[b.id].panChillEnd = ready;
     let left = b.pans - (b.pansBaked || 0) - (b.pansInOven || 0);
     while (left > 0) {
       const pans = Math.min(cap, left);
@@ -210,7 +215,7 @@ const rushValid = (arr) => {
 
 function candidateOrders(queued, prevOrder) {
   const byCreated = (a, b) => a.createdAt - b.createdAt;
-  const chillDesc = (a, b) => b.d.chill - a.d.chill || byCreated(a, b);
+  const chillDesc = (a, b) => b.d.chill + b.d.panChill - (a.d.chill + a.d.panChill) || byCreated(a, b);
   const groupedByTemp = (dir) => {
     const groups = new Map();
     for (const b of queued) {
