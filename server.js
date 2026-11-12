@@ -56,7 +56,13 @@ function normalize(s) {
       delete r.pansPerBatch;
     }
   }
-  for (const o of s.settings.ovens) s.ovens[o.id] ||= { targetTempF: null, readyAt: 0, current: null };
+  for (const o of s.settings.ovens) s.ovens[o.id] ||= { targetTempF: null, readyAt: 0, items: [] };
+  // An oven used to hold one load (`current`); it now holds a list of pans
+  // from one or more batches at the same temperature (`items`).
+  for (const o of Object.values(s.ovens)) {
+    if (!o.items) o.items = o.current ? [{ id: crypto.randomBytes(6).toString('hex'), ...o.current }] : [];
+    delete o.current;
+  }
   return s;
 }
 
@@ -216,10 +222,12 @@ function applyRecipe(b, r) {
   b.recipe = structuredClone(r);
   b.label = `${r.name} #${b.number}`;
   for (const o of Object.values(state.ovens)) {
-    if (o.current?.batchId !== b.id) continue;
-    o.current.bakeMinutes = r.bakeMinutes;
-    o.current.tempF = r.ovenTempF;
-    o.current.label = b.label;
+    for (const it of o.items) {
+      if (it.batchId !== b.id) continue;
+      it.bakeMinutes = r.bakeMinutes;
+      it.tempF = r.ovenTempF;
+      it.label = b.label;
+    }
   }
 }
 
@@ -239,8 +247,20 @@ function pickCoolingArea() {
 }
 
 function pullFromOvens(b) {
-  for (const o of Object.values(state.ovens)) if (o.current?.batchId === b.id) o.current = null;
+  for (const o of Object.values(state.ovens)) o.items = o.items.filter((it) => it.batchId !== b.id);
   b.pansInOven = 0;
+}
+
+// ---------------------------------------------------------------- oven contents
+const ovenCap = () => Math.max(1, Math.floor(n(S().ovenPansPerLoad, 2, 1)));
+const pansIn = (o) => o.items.reduce((sum, it) => sum + it.pans, 0);
+const itemEnd = (it) => it.startedAt + (it.bakeMinutes + (it.extraMinutes || 0)) * 60000;
+/** The pans the request means: by itemId, or the only thing in the oven. */
+function findItem(o, ovenId, itemId) {
+  if (!o.items.length) fail(`${ovenName(ovenId)} is empty`, 409);
+  if (itemId) return o.items.find((it) => it.id === itemId) || fail('Those pans are no longer in the oven', 404);
+  if (o.items.length === 1) return o.items[0];
+  fail(`${ovenName(ovenId)} has pans from more than one batch — say which (itemId)`);
 }
 
 // ---------------------------------------------------------------- batch actions
@@ -317,24 +337,29 @@ const actions = {
   loadOven(b, { ovenId }) {
     need(b, 'staged', 'baking', 'pan_chilling'); // baker may load straight from the chiller
     const o = oven(ovenId);
-    if (o.current) fail(`${ovenName(ovenId)} already has ${o.current.label} in it`, 409);
-    const cap = Math.max(1, Math.floor(n(S().ovenPansPerLoad, 2, 1)));
+    const room = ovenCap() - pansIn(o);
+    if (room <= 0) fail(`${ovenName(ovenId)} is full (${ovenCap()} pans)`, 409);
+    const tempF = n(b.recipe.ovenTempF, 350);
+    // Batches can share an oven only at the same temperature.
+    const other = o.items.find((it) => it.tempF !== tempF);
+    if (other) fail(`${ovenName(ovenId)} is baking ${other.label} at ${other.tempF}°F — ${b.label} bakes at ${tempF}°F`, 409);
     const remaining = b.pans - b.pansBaked - b.pansInOven;
     if (remaining <= 0) fail('All pans of this batch are already baked or in an oven', 409);
-    const pans = Math.min(cap, remaining);
+    const pans = Math.min(room, remaining);
     b.loadCount = (b.loadCount || 0) + 1;
-    o.current = {
-      batchId: b.id, label: b.label, pans, startedAt: Date.now(),
-      bakeMinutes: n(b.recipe.bakeMinutes, 10, 1), tempF: n(b.recipe.ovenTempF, 350),
-      loadNo: b.loadCount, loadsTotal: Math.ceil(b.pans / cap),
+    o.items.push({
+      id: newId(), batchId: b.id, label: b.label, pans, startedAt: Date.now(),
+      bakeMinutes: n(b.recipe.bakeMinutes, 10, 1), tempF, loadNo: b.loadCount,
       extraMinutes: 0, // added by the baker while baking
-    };
+    });
     b.pansInOven += pans;
     if (b.stage === 'pan_chilling') b.t.panChillEnd = Date.now();
     if (b.stage === 'staged' || b.stage === 'pan_chilling') {
       b.t.bakeStart = Date.now();
       setStage(b, 'baking', 'Ovens');
     }
+    const sharing = o.items.length > 1;
+    return { message: `${pans} pan${pans > 1 ? 's' : ''} of ${b.label} into ${ovenName(ovenId)}${sharing ? ` — now ${pansIn(o)} of ${ovenCap()} pans` : ''}` };
   },
   finishCooling(b) {
     need(b, 'cooling');
@@ -502,7 +527,7 @@ app.post('/api/batches/clear-done', route(() => {
 app.post('/api/batches/clear-all', route(() => {
   state.batches = [];
   state.counters = {};
-  for (const o of Object.values(state.ovens)) o.current = null;
+  for (const o of Object.values(state.ovens)) o.items = [];
   state.packLog = [];
   return { message: 'All batches and packed counts cleared' };
 }));
@@ -539,18 +564,19 @@ app.post('/api/ovens/:id/ready', route((req) => {
 }));
 app.post('/api/ovens/:id/extend', route((req) => {
   const o = oven(req.params.id);
-  const c = o.current || fail('Nothing is baking in this oven', 409);
+  if (!o.items.length) fail('Nothing is baking in this oven', 409);
+  const c = findItem(o, req.params.id, req.body.itemId);
   const minutes = Number(req.body.minutes);
   if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 120) fail('Add between 0 and 120 minutes');
   c.extraMinutes = (c.extraMinutes || 0) + minutes;
-  const end = c.startedAt + (c.bakeMinutes + c.extraMinutes) * 60000;
+  const end = itemEnd(c);
   const at = new Date(end).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   return { message: `Added ${minutes} min to ${c.label} — now done at ${at}` };
 }));
 app.post('/api/ovens/:id/unload', route((req) => {
   const o = oven(req.params.id);
-  const c = o.current || fail('Oven is empty', 409);
-  o.current = null;
+  const c = findItem(o, req.params.id, req.body?.itemId);
+  o.items = o.items.filter((it) => it !== c);
   const b = state.batches.find((x) => x.id === c.batchId);
   if (!b) return;
   const now = Date.now();
@@ -605,7 +631,7 @@ app.put('/api/settings', route((req) => {
   if (!next.prepStations.length) fail('Need at least one prep station');
   if (!next.ovens.length) fail('Need at least one oven');
   state.settings = next;
-  for (const o of next.ovens) state.ovens[o.id] ||= { targetTempF: null, readyAt: 0, current: null };
+  for (const o of next.ovens) state.ovens[o.id] ||= { targetTempF: null, readyAt: 0, items: [] };
   return { message: 'Settings saved' };
 }));
 

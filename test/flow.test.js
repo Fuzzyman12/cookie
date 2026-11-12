@@ -37,15 +37,16 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     const order = plan.mixQueue.map((id) => state.batches.find((b) => b.id === id).label);
     console.log('Planned mix order:', order.join(' | '));
     console.log('Projected finish in', Math.round((plan.finishAt - Date.now()) / 60000), 'min; oven temp changes:', plan.changeovers);
-    assert.ok(order[0].startsWith('Iced Sugar'), 'longest chill (sugar, 90m) should be mixed first');
-    assert.ok(order.indexOf('Snickerdoodles #1') > order.indexOf('Chocolate Chip #1'), 'no-chill snickerdoodles should not block chilled doughs');
-    for (const id of Object.keys(state.ovens)) {
-      const temps = plan.ovens[id].schedule.map((l) => l.temp);
-      console.log(`  ${id} temps:`, temps.join(' '));
+    assert.ok(order.indexOf('Snickerdoodles #1') > order.indexOf('Chocolate Chip #1'), 'no-chill, highest-temp snickerdoodles are mixed later');
+    for (const oid of Object.keys(state.ovens)) {
+      const temps = plan.ovens[oid].schedule.map((l) => l.temp);
+      console.log(`  ${oid} temps:`, temps.join(' '));
+      assert.ok(temps.every((t, i) => i === 0 || t >= temps[i - 1]), `${oid} goes low → high`);
     }
+    assert.strictEqual(plan.tempDrops, 0);
 
     // Walk the first planned batch through every station
-    const id = plan.mixQueue[0];
+    const id = state.batches.find((x) => x.recipeId === 'r-sugar').id;
     await act(id, 'startMix', { station: 'Mix Station #3' });
     await act(id, 'toggleCheck', { stage: 'mix', index: 0 });
     await act(id, 'stepTimer', { stage: 'mix', index: 0 });
@@ -71,7 +72,7 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     await call('POST', '/api/ovens/oven1/temp', { tempF: 375 });
     await call('POST', '/api/ovens/oven1/ready');
     await act(id, 'loadOven', { ovenId: 'oven1' });
-    await assert.rejects(act(id, 'loadOven', { ovenId: 'oven1' }), /already has/);
+    await assert.rejects(act(id, 'loadOven', { ovenId: 'oven1' }), /Island Oven is full \(2 pans\)/);
 
     // Adding bake time while baking
     await call('POST', '/api/ovens/oven1/extend', { minutes: 1 });
@@ -80,7 +81,7 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     await assert.rejects(call('POST', '/api/ovens/oven1/extend', { minutes: 0 }), /between/);
     await assert.rejects(call('POST', '/api/ovens/oven2/extend', { minutes: 5 }), /Nothing is baking/);
     ({ state, plan } = await get());
-    assert.strictEqual(state.ovens.oven1.current.extraMinutes, 3.5);
+    assert.strictEqual(state.ovens.oven1.items[0].extraMinutes, 3.5);
     const inOven = plan.batches[id].loads.find((l) => l.inOven);
     assert.strictEqual(inOven.end - inOven.start, (8 + 3.5) * 60000, 'planner includes added time');
 
@@ -93,9 +94,9 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     b = state.batches.find((x) => x.id === id);
     assert.strictEqual(b.recipe.bakeMinutes, 9);
     assert.strictEqual(b.label, 'Sugar Cutouts #1');
-    assert.strictEqual(state.ovens.oven1.current.bakeMinutes, 9);
-    assert.strictEqual(state.ovens.oven1.current.extraMinutes, 3.5, 'added time is kept');
-    assert.strictEqual(state.ovens.oven1.current.label, 'Sugar Cutouts #1');
+    assert.strictEqual(state.ovens.oven1.items[0].bakeMinutes, 9);
+    assert.strictEqual(state.ovens.oven1.items[0].extraMinutes, 3.5, 'added time is kept');
+    assert.strictEqual(state.ovens.oven1.items[0].label, 'Sugar Cutouts #1');
     assert.strictEqual(b.checks.pack, undefined, 'changed steps -> ticks cleared');
     assert.deepStrictEqual(b.checks.mix, [true], 'unchanged steps -> ticks kept (ticked during mixing)');
 
@@ -116,7 +117,7 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     assert.ok(b.coolGroups[1].outAt > b.coolGroups[0].outAt, 'groups keep their own out-of-oven time');
     await act(id, 'loadOven', { ovenId: 'oven1' });
     ({ state } = await get());
-    assert.strictEqual(state.ovens.oven1.current.pans, 1, 'last load has the leftover pan');
+    assert.strictEqual(state.ovens.oven1.items[0].pans, 1, 'last load has the leftover pan');
     r = await call('POST', '/api/ovens/oven1/unload');
     ({ state, plan } = await get());
     b = state.batches.find((x) => x.id === id);
@@ -231,6 +232,45 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     // Recipe without pan chill still goes straight to the rack
     const noChill = state.recipes.find((x) => x.id === 'r-snickerdoodle');
     assert.ok(!noChill.panChillMinutes);
+
+    // Sharing an oven: same-temperature batches fill the spare room
+    await call('PUT', '/api/settings', { ovenPansPerLoad: 4 });
+    for (const rid of ['r-choc-chip', 'r-oatmeal', 'r-snickerdoodle']) await call('POST', '/api/batches', { recipeId: rid, count: 1 });
+    ({ state } = await get());
+    const [cc, oa, sd] = state.batches.slice(-3).map((x) => x.id);
+    for (const [bid, pans] of [[cc, 3], [oa, 3], [sd, 2]]) {
+      await act(bid, 'startMix');
+      await act(bid, 'finishMix', { to: 'prep' });
+      await act(bid, 'startPrep');
+      await act(bid, 'finishPrep', { pans, to: 'rack' });
+    }
+    r = await act(cc, 'loadOven', { ovenId: 'oven1' });
+    assert.match(r.message, /3 pans of Chocolate Chip #\d+ into Island Oven$/);
+    await assert.rejects(act(sd, 'loadOven', { ovenId: 'oven1' }), /baking Chocolate Chip #\d+ at 350°F — Snickerdoodles #\d+ bakes at 400°F/);
+    r = await act(oa, 'loadOven', { ovenId: 'oven1' });
+    assert.match(r.message, /1 pan of Oatmeal Raisin #\d+ into Island Oven — now 4 of 4 pans/);
+    await assert.rejects(act(oa, 'loadOven', { ovenId: 'oven1' }), /full \(4 pans\)/);
+    ({ state, plan } = await get());
+    const items = state.ovens.oven1.items;
+    assert.deepStrictEqual(items.map((it) => [it.batchId, it.pans]), [[cc, 3], [oa, 1]]);
+    assert.notStrictEqual(items[0].bakeMinutes, items[1].bakeMinutes, 'each batch keeps its own bake time (11 vs 12 min)');
+    assert.strictEqual(state.batches.find((x) => x.id === oa).pansInOven, 1);
+    await assert.rejects(call('POST', '/api/ovens/oven1/unload'), /more than one batch/);
+    await call('POST', '/api/ovens/oven1/extend', { itemId: items[1].id, minutes: 2 });
+    r = await call('POST', '/api/ovens/oven1/unload', { itemId: items[0].id });
+    assert.match(r.message, /Move 3 pans of Chocolate Chip/);
+    ({ state, plan } = await get());
+    assert.deepStrictEqual(state.ovens.oven1.items.map((it) => [it.batchId, it.extraMinutes]), [[oa, 2]], 'oatmeal keeps baking with its added time');
+    assert.strictEqual(state.batches.find((x) => x.id === cc).stage, 'cooling');
+    // Planner tops up the oven's spare room right away with the rest of the oatmeal
+    const topUp = plan.ovens.oven1.schedule[0];
+    assert.ok(topUp.start - Date.now() < 5000, 'top up right away, not after the oatmeal finishes');
+    assert.strictEqual(topUp.temp, 350);
+    assert.strictEqual(topUp.items.reduce((sum, it) => sum + it.pans, 0), 3, 'fills all 3 free pans');
+    assert.ok(topUp.items.every((it) => state.batches.find((x) => x.id === it.batchId).recipe.ovenTempF === 350), 'only with 350°F dough that is ready');
+    await call('POST', '/api/ovens/oven1/unload', { itemId: state.ovens.oven1.items[0].id });
+    for (const bid of [cc, oa, sd]) await call('DELETE', `/api/batches/${bid}`);
+    await call('PUT', '/api/settings', { ovenPansPerLoad: 2 });
 
     // Alarm dismissals are shared by all tablets
     await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2', 'cool-x-0-5'] });

@@ -317,3 +317,10 @@ body.alarming { animation: flash .8s infinite alternate; }
   .report h2 { break-after: avoid; }
 }
 .report td:not(:first-child), .report th { white-space: nowrap; }
+
+/* ---------- ovens holding several batches */
+.ovenitem { border-left: 6px solid var(--c, #999); padding: .2rem 0 .6rem .8rem; margin: .6rem 0; border-bottom: 1px dashed var(--line); }
+.ovenitem .bigtimer { font-size: 2.2rem; }
+.fill { margin-top: .6rem; padding: .6rem .8rem; background: #fff4e6; border-radius: 10px; border: 2px dashed #f0c999; }
+.nextload { font-size: 1.15rem; font-weight: 700; }
+.uprow > span:last-child { min-width: 0; }

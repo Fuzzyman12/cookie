@@ -49,7 +49,9 @@ function changeoverMs(fromTemp, toTemp, s) {
 
 const argmin = (arr) => arr.reduce((best, v, i) => (v < arr[best] ? i : best), 0);
 
-function simulate(ctx, order) {
+// `release`: optional Map batchId → earliest time to start mixing it (used by
+// the backward plan to mix dough just in time instead of as early as possible).
+function simulate(ctx, order, release = null) {
   const { now, s, active } = ctx;
   const cap = Math.max(1, Math.floor(num(s.ovenPansPerLoad, 2)));
   const P = {};
@@ -67,7 +69,7 @@ function simulate(ctx, order) {
   }
   for (const b of order) {
     const st = stations[argmin(stations.map((x) => x.free))];
-    const start = st.free;
+    const start = Math.max(st.free, release?.get(b.id) ?? now);
     st.free = start + b.d.mix;
     Object.assign(P[b.id], { mixStart: start, mixEnd: st.free, mixStation: st.name });
   }
@@ -128,20 +130,28 @@ function simulate(ctx, order) {
   }
 
   // ---------- Ovens
+  // An oven holds up to `cap` pans. Pans from different batches share an oven
+  // when they bake at the same temperature (each keeps its own bake time).
+  // Policy: avoid temperature changes, go low → high (cooling an oven down is
+  // slow and heavily penalized), and keep every oven busy.
   const ovens = s.ovens.map((o) => {
     const st = ctx.ovenState[o.id] || {};
+    const items = st.items || [];
     let free = Math.max(now, st.readyAt || 0);
-    const temp = st.targetTempF ?? null;
-    if (st.current) {
-      const end = Math.max(now, st.current.startedAt + (st.current.bakeMinutes + (st.current.extraMinutes || 0)) * MIN);
+    let temp = st.targetTempF ?? null;
+    let used = 0;
+    for (const it of items) {
+      const end = Math.max(now, it.startedAt + (it.bakeMinutes + (it.extraMinutes || 0)) * MIN);
       free = Math.max(free, end);
-      const pb = P[st.current.batchId];
-      if (pb) pb.loads.push({ ovenId: o.id, batchId: st.current.batchId, start: st.current.startedAt, end, temp: st.current.tempF, pans: st.current.pans, inOven: true });
+      used += it.pans;
+      temp = it.tempF;
+      const pb = P[it.batchId];
+      if (pb) pb.loads.push({ ovenId: o.id, batchId: it.batchId, start: it.startedAt, end, temp: it.tempF, pans: it.pans, inOven: true });
     }
-    return { id: o.id, free, temp, schedule: [] };
+    return { id: o.id, free, temp, schedule: [], busy: items.length > 0, room: items.length ? Math.max(0, cap - used) : 0 };
   });
 
-  const loads = [];
+  const pool = [];
   for (const b of active) {
     if (['cooling', 'packing', 'done'].includes(b.stage)) continue;
     let ready;
@@ -149,40 +159,73 @@ function simulate(ctx, order) {
     else if (b.stage === 'pan_chilling') ready = Math.max(now, (b.t.panChillStart || now) + b.d.panChill);
     else ready = P[b.id].prepEnd + b.d.panChill;
     if (b.d.panChill && b.stage !== 'staged' && b.stage !== 'baking') P[b.id].panChillEnd = ready;
-    let left = b.pans - (b.pansBaked || 0) - (b.pansInOven || 0);
-    while (left > 0) {
-      const pans = Math.min(cap, left);
-      left -= pans;
-      loads.push({ b, ready, pans, temp: b.d.temp, bake: b.d.bake, seq: seq.get(b.id) });
+    const left = b.pans - (b.pansBaked || 0) - (b.pansInOven || 0);
+    if (left > 0) pool.push({ b, ready, left, temp: b.d.temp, bake: b.d.bake, seq: seq.get(b.id) });
+  }
+  pool.sort((x, y) => x.seq - y.seq);
+
+  // Fill `room` pans with other same-temperature dough that's ready by `start`.
+  const fill = (start, temp, room, items) => {
+    for (const L of pool) {
+      if (room <= 0) break;
+      if (L.left <= 0 || L.temp !== temp || L.ready > start) continue;
+      const pans = Math.min(room, L.left);
+      L.left -= pans;
+      room -= pans;
+      items.push({ L, pans });
     }
+  };
+  const addLoad = (o, start, co, items) => {
+    const entry = {
+      ovenId: o.id, start, temp: items[0].L.temp,
+      end: Math.max(...items.map(({ L }) => start + L.bake)),
+      changeoverAt: co ? start - co : null, changeoverFrom: co ? o.temp : null,
+      items: items.map(({ L, pans }) => ({ batchId: L.b.id, pans, end: start + L.bake })),
+    };
+    for (const it of entry.items) {
+      P[it.batchId].loads.push({ ovenId: o.id, batchId: it.batchId, start, end: it.end, temp: entry.temp, pans: it.pans, shared: entry.items.length > 1 });
+    }
+    o.schedule.push(entry);
+    return entry;
+  };
+
+  // Ovens that already have pans in them but still have room: top them up now.
+  for (const o of ovens) {
+    if (!o.room) continue;
+    const items = [];
+    fill(now, o.temp, o.room, items);
+    if (items.length) o.free = Math.max(o.free, addLoad(o, now, 0, items).end);
   }
 
-  let changeovers = 0;
-  while (loads.length && ovens.length) {
+  // Lowering an oven's temperature is slow and breaks "low → high", so it is
+  // only worth it when the alternative is a long wait.
+  const DOWN_PENALTY = 45 * MIN;
+  let changeovers = 0, downs = 0, idle = 0, wait = 0;
+  while (ovens.length && pool.some((L) => L.left > 0)) {
     let best = null;
     for (const o of ovens) {
-      const seen = new Set();
-      for (const L of loads) {
-        if (seen.has(L.b.id)) continue; // a batch's loads are interchangeable
-        seen.add(L.b.id);
+      for (const L of pool) {
+        if (L.left <= 0) continue;
         const co = changeoverMs(o.temp, L.temp, s);
         const start = Math.max(o.free + co, L.ready);
-        // Discourage temperature flip-flopping beyond its raw time cost.
-        const score = start + co * 0.5 + L.seq * 1000;
+        const down = o.temp !== null && L.temp < o.temp;
+        // earliest start, then: fewer/cheaper temp changes, never go down if
+        // avoidable, lower temps first (≈1 s per °F), then planned order.
+        const score = start + co * 0.5 + (down ? DOWN_PENALTY : 0) + L.temp * 1000 + L.seq * 1000;
         if (!best || score < best.score) best = { o, L, start, co, score };
       }
     }
     const { o, L, start, co } = best;
-    loads.splice(loads.indexOf(L), 1);
-    const entry = {
-      ovenId: o.id, batchId: L.b.id, start, end: start + L.bake, temp: L.temp, pans: L.pans,
-      changeoverAt: co ? start - co : null, changeoverFrom: co ? o.temp : null,
-    };
-    if (co && o.temp !== null) changeovers++;
-    o.schedule.push(entry);
-    P[L.b.id].loads.push(entry);
+    const items = [{ L, pans: Math.min(cap, L.left) }];
+    L.left -= items[0].pans;
+    fill(start, L.temp, cap - items[0].pans, items); // top up with other ready dough at this temp
+    if (o.busy) idle += Math.max(0, start - co - o.free);
+    if (co && o.temp !== null) { changeovers++; if (L.temp < o.temp) downs++; }
+    const entry = addLoad(o, start, co, items);
+    for (const it of items) wait += Math.max(0, start - it.L.ready) * it.pans;
     o.free = entry.end;
     o.temp = L.temp;
+    o.busy = true;
   }
 
   // ---------- Cooling, packing, totals
@@ -206,8 +249,9 @@ function simulate(ctx, order) {
     sumDone += p.doneAt - now;
   }
   const n = active.length || 1;
-  const score = finish - now + (0.25 * sumDone) / n + changeovers * 2 * MIN;
-  return { score, P, ovens, finish, changeovers };
+  // Finish early; then few temp changes (going down costs most); then keep ovens busy.
+  const score = finish - now + (0.25 * sumDone) / n + changeovers * 2 * MIN + downs * 45 * MIN + idle * 0.5 + wait * 0.02;
+  return { score, P, ovens, finish, changeovers, downs, idle, wait };
 }
 
 const rushFirst = (arr) => [...arr.filter((b) => b.rush), ...arr.filter((b) => !b.rush)];
@@ -219,6 +263,53 @@ const rushValid = (arr) => {
   }
   return true;
 };
+
+// Work backward from the ovens: bake lowest temperature first and, within a
+// temperature, whichever dough can be ready soonest. Give each batch the next
+// free oven slot, fit its prep onto a prep station (one batch at a time each)
+// as late as still works, and start mixing just early enough (mix + chill) for
+// that prep. Returns the mixing order and the earliest time to mix each batch.
+function backwardPlan(queued, ctx) {
+  const { s, now } = ctx;
+  const cap = Math.max(1, Math.floor(num(s.ovenPansPerLoad, 2)));
+  const prepTime = (b) => b.d.prepPerPan * b.pans;
+  const lead = (b) => b.d.mix + b.d.chill + prepTime(b) + b.d.panChill;
+  const ovenFree = s.ovens.map((o) => {
+    const st = ctx.ovenState[o.id] || {};
+    let free = st.targetTempF == null ? now + num(s.preheatMinutes, 15) * MIN : Math.max(now, st.readyAt || 0);
+    for (const it of st.items || []) free = Math.max(free, it.startedAt + (it.bakeMinutes + (it.extraMinutes || 0)) * MIN);
+    return free;
+  });
+  if (!ovenFree.length) ovenFree.push(now);
+  const nPrep = Array.isArray(s.prepStations) && s.prepStations.length ? s.prepStations.length : 1;
+  const prepFree = Array(nPrep).fill(now);
+  // Work already past mixing takes oven and prep time first.
+  for (const b of ctx.active) {
+    if (['queued', 'cooling', 'packing', 'done'].includes(b.stage)) continue;
+    if (['mixing', 'chilling', 'ready_prep', 'prepping'].includes(b.stage)) {
+      const k = argmin(prepFree);
+      prepFree[k] += prepTime(b);
+    }
+    const left = b.pans - (b.pansBaked || 0) - (b.pansInOven || 0);
+    const k = argmin(ovenFree);
+    ovenFree[k] += Math.ceil(Math.max(0, left) / cap) * b.d.bake;
+  }
+  const ovenOrder = [...queued].sort((a, b) => (b.rush ? 1 : 0) - (a.rush ? 1 : 0) || a.d.temp - b.d.temp || lead(a) - lead(b) || a.createdAt - b.createdAt);
+  const release = new Map();
+  for (const b of ovenOrder) {
+    const k = argmin(ovenFree);
+    const p = argmin(prepFree);
+    const earliestPrep = now + b.d.mix + b.d.chill;
+    const wantPrep = ovenFree[k] - b.d.panChill - prepTime(b); // just in time for the oven
+    const prepStart = Math.max(prepFree[p], earliestPrep, b.rush ? 0 : wantPrep);
+    prepFree[p] = prepStart + prepTime(b);
+    const slot = Math.max(ovenFree[k], prepFree[p] + b.d.panChill);
+    ovenFree[k] = slot + Math.ceil(b.pans / cap) * b.d.bake;
+    release.set(b.id, b.rush ? now : Math.max(now, prepStart - b.d.chill - b.d.mix));
+  }
+  const order = [...queued].sort((a, b) => release.get(a.id) - release.get(b.id) || a.createdAt - b.createdAt);
+  return { order, release };
+}
 
 function candidateOrders(queued, prevOrder) {
   const byCreated = (a, b) => a.createdAt - b.createdAt;
@@ -236,8 +327,10 @@ function candidateOrders(queued, prevOrder) {
   };
   const prevIdx = new Map(prevOrder.map((id, i) => [id, i]));
   const prev = [...queued].sort((a, b) => (prevIdx.get(a.id) ?? 1e9) - (prevIdx.get(b.id) ?? 1e9) || chillDesc(a, b));
+  const tempAsc = [...queued].sort((a, b) => a.d.temp - b.d.temp || chillDesc(a, b));
   return [
     prev,
+    tempAsc,
     [...queued].sort(chillDesc),
     groupedByTemp(1),
     groupedByTemp(-1),
@@ -253,18 +346,25 @@ function computePlan(state, now = Date.now(), prevOrder = []) {
   const queued = active.filter((b) => b.stage === 'queued');
   const ctx = { now, s, active, ovenState: state.ovens || {} };
 
-  // Pick best starting order; the previous plan gets a small stability bonus
-  // so the "Up next" card doesn't flicker between near-identical options.
-  const cands = candidateOrders(queued, prevOrder);
-  let bestOrder = cands[0];
-  let best = simulate(ctx, bestOrder);
+  const back = backwardPlan(queued, ctx);
+  // Each candidate: a mixing order, optionally with just-in-time release times.
+  const cands = [
+    ...candidateOrders(queued, prevOrder).map((order) => ({ order, release: null })),
+    { order: rushFirst(back.order), release: back.release },
+  ];
+  // The previous plan gets a small stability bonus so "Up next" doesn't flicker
+  // between near-identical options.
+  let bestCand = cands[0];
+  let best = simulate(ctx, bestCand.order, bestCand.release);
   best.score -= 2 * MIN;
-  for (const order of cands.slice(1)) {
-    const r = simulate(ctx, order);
-    if (r.score < best.score) { best = r; bestOrder = order; }
+  for (const c of cands.slice(1)) {
+    const r = simulate(ctx, c.order, c.release);
+    if (r.score < best.score) { best = r; bestCand = c; }
   }
 
   // Local search: move one batch to another position while it helps.
+  let bestOrder = bestCand.order;
+  const release = bestCand.release;
   const deadline = Date.now() + SEARCH_BUDGET_MS;
   let improved = queued.length > 1;
   while (improved && Date.now() < deadline) {
@@ -276,7 +376,7 @@ function computePlan(state, now = Date.now(), prevOrder = []) {
         const [moved] = next.splice(i, 1);
         next.splice(j, 0, moved);
         if (!rushValid(next)) continue;
-        const r = simulate(ctx, next);
+        const r = simulate(ctx, next, release);
         if (r.score < best.score - 1000) {
           best = r; bestOrder = next; improved = true;
           break outer;
@@ -286,7 +386,7 @@ function computePlan(state, now = Date.now(), prevOrder = []) {
     }
   }
 
-  const final = simulate(ctx, bestOrder); // clean (un-bonused) result
+  const final = simulate(ctx, bestOrder, release); // clean (un-bonused) result
   const P = final.P;
   const prepQueue = active
     .filter((b) => ['queued', 'mixing', 'chilling', 'ready_prep', 'prepping'].includes(b.stage))
@@ -295,14 +395,17 @@ function computePlan(state, now = Date.now(), prevOrder = []) {
   const ovens = {};
   for (const o of final.ovens) ovens[o.id] = { schedule: o.schedule };
 
+
   return {
     computedAt: now,
-    mixQueue: bestOrder.map((b) => b.id),
+    // Listed in planned mixing-time order (ties keep the search order).
+    mixQueue: bestOrder.map((b, i) => [b.id, P[b.id].mixStart, i]).sort((x, y) => x[1] - y[1] || x[2] - y[2]).map((x) => x[0]),
     prepQueue,
     batches: P,
     ovens,
     finishAt: final.finish,
     changeovers: final.changeovers,
+    tempDrops: final.downs,
   };
 }
 

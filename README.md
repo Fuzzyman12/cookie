@@ -63,8 +63,12 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    on the staging rack with where they are and when they'll be ready, and the
    planner holds those loads until the chill is done. The baker can load them
    early with a confirmation.
-6. **Baking** – the oven card has **+1 / +5 / +10 min** buttons and a custom
-   box to add bake time to the load in the oven.
+6. **Baking** – an oven holds up to *pans per oven* (Settings). If there's room
+   left and other dough at the same temperature is ready, the oven card shows
+   **Fill with …** buttons, and the staging rack shows **Add to …**. Batches
+   at a different temperature can't share. Each batch in the oven has its own
+   timer, bake reminders, **+1 / +5 / +10 min** and custom add-time buttons,
+   and **Unload** button, so it comes out on its own schedule.
 7. **Cooling** – pans go into cooling the moment they're unloaded, even if
    the rest of the batch is still baking. Each oven load gets its own group on
    the Cooling & Packing tablet ("Pans 1–2, out of Island Oven at 10:42") with
@@ -107,16 +111,31 @@ On every change (and every 20 s) the server simulates the rest of the day:
   (Settings → Prep stations), each taking `prep minutes per pan × pans`. A
   station's *batches at once* only lets staff start extra batches there by
   hand. The plan then waits until all of them are done.
-- **Ovens** – each holds `pans per load`. Changing temperature costs time
-  (preheat from cold, minutes per 25°F up or down), so the planner groups loads
-  by temperature and tells the baker when to change an oven and to what.
+- **Ovens** – each holds `pans per oven`. Pans from different batches share an
+  oven when they bake at the same temperature, and each batch keeps its own
+  bake time. Changing temperature costs time (preheat from cold, minutes per
+  25°F up or down). The planner tells the baker when to change an oven and to
+  what.
 - **Cooling / packing** – timed.
 
-It tries several mixing orders (longest chill first, grouped by oven temp,
-first-in-first-out, the previous plan) and then improves the best one by moving
-batches around, choosing whatever finishes everything soonest with the fewest
-oven temperature changes. Stations follow the plan but can always go out of
-order. The plan just recalculates.
+The planner's priorities, in order:
+
+1. **Fewest oven temperature changes.** Same-temperature dough is grouped and
+   shares ovens.
+2. **Low → high.** Lower-temperature recipes bake first and higher ones later.
+   Turning an oven *down* is slow, so the plan avoids it unless the only other
+   choice is a long wait.
+3. **Keep the ovens busy.** It works backward from the oven plan: given each
+   recipe's mix, chill, prep (one batch at a time per prep station) and pan
+   chill times, it works out when each batch must be mixed so the dough is
+   ready just as an oven frees up. A no-chill, high-temperature recipe may be
+   held ("⏳ Not needed yet — planned to start at 3:40") instead of being mixed
+   early and sitting around.
+
+The order batches were added doesn't matter (except *Rush*). The planner
+compares this backward plan with several "mix everything now" orders and
+keeps whichever finishes soonest with the fewest temperature changes. Stations
+follow the plan but can always go out of order. The plan just recalculates.
 
 The **Overview** timeline shows every batch's planned mix → chill → prep →
 bake → cool → pack, and each oven's loads and temperature changes.
