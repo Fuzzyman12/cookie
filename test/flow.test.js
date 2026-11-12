@@ -55,7 +55,7 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     await act(id, 'finishChill');
     await act(id, 'startPrep');
     let b = state.batches.find((x) => x.id === id);
-    assert.strictEqual(b.pans, 3, 'queued batch uses the estimate');
+    assert.strictEqual(b.pans, 3, "queued batch uses the recipe's estimated pans");
     assert.strictEqual(b.pansEstimated, true);
     await assert.rejects(act(id, 'finishPrep'), /how many pans/);
     await assert.rejects(act(id, 'finishPrep', { pans: 0 }), /how many pans/);
@@ -67,7 +67,7 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     assert.strictEqual(b.stage, 'staged');
     assert.strictEqual(b.pans, 5);
     assert.strictEqual(b.pansEstimated, false);
-    assert.deepStrictEqual(state.panHistory['r-sugar'], [3, 5]);
+    assert.deepStrictEqual(state.panHistory['r-sugar'], [5], 'actual count is recorded');
 
     await call('POST', '/api/ovens/oven1/temp', { tempF: 375 });
     await call('POST', '/api/ovens/oven1/ready');
@@ -234,7 +234,9 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     assert.ok(!noChill.panChillMinutes);
 
     // Sharing an oven: same-temperature batches fill the spare room
-    await call('PUT', '/api/settings', { ovenPansPerLoad: 4 });
+    await call('PUT', '/api/settings', { ovens: [{ name: 'Island Oven', capacity: 4 }, { name: 'Corner Oven', capacity: 2 }] });
+    ({ state } = await get());
+    assert.deepStrictEqual(state.settings.ovens.map((o) => [o.id, o.capacity]), [['oven1', 4], ['oven2', 2]], 'each oven has its own capacity');
     for (const rid of ['r-choc-chip', 'r-oatmeal', 'r-snickerdoodle']) await call('POST', '/api/batches', { recipeId: rid, count: 1 });
     ({ state } = await get());
     const [cc, oa, sd] = state.batches.slice(-3).map((x) => x.id);
@@ -270,7 +272,7 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     assert.ok(topUp.items.every((it) => state.batches.find((x) => x.id === it.batchId).recipe.ovenTempF === 350), 'only with 350°F dough that is ready');
     await call('POST', '/api/ovens/oven1/unload', { itemId: state.ovens.oven1.items[0].id });
     for (const bid of [cc, oa, sd]) await call('DELETE', `/api/batches/${bid}`);
-    await call('PUT', '/api/settings', { ovenPansPerLoad: 2 });
+    await call('PUT', '/api/settings', { ovens: [{ name: 'Island Oven', capacity: 2 }, { name: 'Corner Oven', capacity: 2 }] });
 
     // Mix the day before (overnight chill)
     const { recipe: night } = await call('POST', '/api/recipes', { name: 'Overnight Chunk', ovenTempF: 350, bakeMinutes: 12, chillMinutes: 720, mixDayBefore: true });
@@ -311,10 +313,18 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     ({ state } = await get());
     assert.strictEqual(state.ovens.oven2.readyConfirmed, true);
 
-    // Next sugar batch is estimated from what prep reported (avg of 3 and 5)
+    // New batches use the recipe's estimate, not what prep happened to fill last time
     await call('POST', '/api/batches', { recipeId: 'r-sugar', count: 1 });
     ({ state, plan } = await get());
-    assert.strictEqual(state.batches.at(-1).pans, 4);
+    assert.strictEqual(state.batches.at(-1).pans, 3);
+    assert.strictEqual(state.batches.at(-1).pansEstimated, true);
+    // Changing the recipe's estimate updates batches that haven't been prepped yet
+    const sugarNow = state.recipes.find((x) => x.id === 'r-sugar');
+    await call('PUT', '/api/recipes/r-sugar', { ...sugarNow, pansPerBatch: 5, prepMinutesPerPan: 6 });
+    ({ state, plan } = await get());
+    const sb = state.batches.at(-1);
+    assert.strictEqual(sb.pans, 5);
+    assert.strictEqual(plan.batches[sb.id].prepEnd - plan.batches[sb.id].prepStart, 5 * 6 * 60000, 'prep time = pans × recipe minutes per pan');
     assert.deepStrictEqual(state.batches.at(-1).coolGroups, []);
 
     // Guard rails
@@ -323,18 +333,18 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     // Recipe CRUD + settings
     const { recipe } = await call('POST', '/api/recipes', { name: 'Test', ovenTempF: 325, chillMinutes: 0, mixSteps: [{ text: 'Stir', minutes: '2' }, { text: '' }] });
     assert.deepStrictEqual(recipe.mixSteps, [{ text: 'Stir', minutes: 2 }]);
-    assert.strictEqual(recipe.pansPerBatch, undefined, 'pans are no longer a recipe field');
+    assert.deepStrictEqual([recipe.pansPerBatch, recipe.prepMinutesPerPan], [4, 4], 'recipe defaults: 4 pans, 4 min per pan');
     await call('POST', '/api/batches', { recipeId: recipe.id, count: 1 });
     ({ state } = await get());
-    assert.strictEqual(state.batches.at(-1).pans, 4, 'new recipe falls back to defaultPansPerBatch');
-    // Old export with pansPerBatch seeds the estimate
-    await call('POST', '/api/recipes/import', [{ id: 'r-old', name: 'Old', pansPerBatch: 6 }]);
+    assert.strictEqual(state.batches.at(-1).pans, 4);
+    await call('POST', '/api/recipes/import', [{ id: 'r-old', name: 'Old', pansPerBatch: 6, prepMinutesPerPan: 3 }]);
     ({ state } = await get());
-    assert.strictEqual(state.recipes.find((x) => x.id === 'r-old').pansPerBatch, undefined);
-    assert.deepStrictEqual(state.panHistory['r-old'], [6]);
-    await call('PUT', '/api/settings', { ovens: 'A\nB\nC', ovenPansPerLoad: 3 });
+    const old = state.recipes.find((x) => x.id === 'r-old');
+    assert.deepStrictEqual([old.pansPerBatch, old.prepMinutesPerPan], [6, 3]);
+    await call('PUT', '/api/settings', { ovens: 'A\nB\nC' }); // plain names keep existing capacities
     ({ state, plan } = await get());
     assert.strictEqual(state.settings.ovens.length, 3);
+    assert.deepStrictEqual(state.settings.ovens.map((o) => o.capacity), [2, 2, 2]);
     assert.ok(plan.ovens.oven3, 'planner uses the new oven');
 
     await call('PUT', '/api/settings', { shares: 12 });

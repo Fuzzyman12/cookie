@@ -57,13 +57,15 @@ const isLater = (b, today) => !!b.bakeDate && b.bakeDate > today && ['queued', '
 /** Mixed today so it can chill overnight for a later bake day. */
 const isMixAhead = (b, today) => isLater(b, today) && !!b.recipe?.mixDayBefore;
 
+/** Pans an oven holds (its own capacity; older data used one setting for all). */
+const ovenCapacity = (o, s) => Math.max(1, Math.floor(num(o?.capacity, num(s.ovenPansPerLoad, 2))));
+
 const argmin = (arr) => arr.reduce((best, v, i) => (v < arr[best] ? i : best), 0);
 
 // `release`: optional Map batchId → earliest time to start mixing it (used by
 // the backward plan to mix dough just in time instead of as early as possible).
 function simulate(ctx, order, release = null) {
   const { now, s, active } = ctx;
-  const cap = Math.max(1, Math.floor(num(s.ovenPansPerLoad, 2)));
   const P = {};
   for (const b of active) P[b.id] = { loads: [] };
 
@@ -165,7 +167,8 @@ function simulate(ctx, order, release = null) {
       const pb = P[it.batchId];
       if (pb) pb.loads.push({ ovenId: o.id, batchId: it.batchId, start: it.startedAt, end, temp: it.tempF, pans: it.pans, inOven: true });
     }
-    return { id: o.id, free, temp, schedule: [], busy: items.length > 0, room: items.length ? Math.max(0, cap - used) : 0 };
+    const cap = ovenCapacity(o, s);
+    return { id: o.id, cap, free, temp, schedule: [], busy: items.length > 0, room: items.length ? Math.max(0, cap - used) : 0 };
   });
 
   const pool = [];
@@ -233,9 +236,9 @@ function simulate(ctx, order, release = null) {
       }
     }
     const { o, L, start, co } = best;
-    const items = [{ L, pans: Math.min(cap, L.left) }];
+    const items = [{ L, pans: Math.min(o.cap, L.left) }];
     L.left -= items[0].pans;
-    fill(start, L.temp, cap - items[0].pans, items); // top up with other ready dough at this temp
+    fill(start, L.temp, o.cap - items[0].pans, items); // top up with other ready dough at this temp
     if (o.busy) idle += Math.max(0, start - co - o.free);
     if (co && o.temp !== null) { changeovers++; if (L.temp < o.temp) downs++; }
     const entry = addLoad(o, start, co, items);
@@ -288,7 +291,8 @@ const rushValid = (arr) => {
 // that prep. Returns the mixing order and the earliest time to mix each batch.
 function backwardPlan(queued, ctx) {
   const { s, now } = ctx;
-  const cap = Math.max(1, Math.floor(num(s.ovenPansPerLoad, 2)));
+  const caps = s.ovens.map((o) => ovenCapacity(o, s));
+  if (!caps.length) caps.push(Math.max(1, Math.floor(num(s.ovenPansPerLoad, 2))));
   const prepTime = (b) => b.d.prepPerPan * b.pans;
   const lead = (b) => b.d.mix + b.d.chill + prepTime(b) + b.d.panChill;
   const ovenFree = s.ovens.map((o) => {
@@ -309,7 +313,7 @@ function backwardPlan(queued, ctx) {
     }
     const left = b.pans - (b.pansBaked || 0) - (b.pansInOven || 0);
     const k = argmin(ovenFree);
-    ovenFree[k] += Math.ceil(Math.max(0, left) / cap) * b.d.bake;
+    ovenFree[k] += Math.ceil(Math.max(0, left) / caps[k]) * b.d.bake;
   }
   const ovenOrder = [...queued].sort((a, b) => (b.rush ? 1 : 0) - (a.rush ? 1 : 0) || a.d.temp - b.d.temp || lead(a) - lead(b) || a.createdAt - b.createdAt);
   const release = new Map();
@@ -321,7 +325,7 @@ function backwardPlan(queued, ctx) {
     const prepStart = Math.max(prepFree[p], earliestPrep, b.rush ? 0 : wantPrep);
     prepFree[p] = prepStart + prepTime(b);
     const slot = Math.max(ovenFree[k], prepFree[p] + b.d.panChill);
-    ovenFree[k] = slot + Math.ceil(b.pans / cap) * b.d.bake;
+    ovenFree[k] = slot + Math.ceil(b.pans / caps[k]) * b.d.bake;
     release.set(b.id, b.rush ? now : Math.max(now, prepStart - b.d.chill - b.d.mix));
   }
   const order = [...queued].sort((a, b) => release.get(a.id) - release.get(b.id) || a.createdAt - b.createdAt);
@@ -435,4 +439,4 @@ function computePlan(state, now = Date.now(), prevOrder = []) {
   };
 }
 
-module.exports = { computePlan, changeoverMs, durations, localDate, MIN };
+module.exports = { computePlan, changeoverMs, durations, localDate, ovenCapacity, MIN };

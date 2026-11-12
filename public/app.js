@@ -50,10 +50,8 @@ const remainingPans = (b) => b.pans - b.pansBaked - b.pansInOven;
 const loadEnd = (cur) => cur.startedAt + (cur.bakeMinutes + (cur.extraMinutes || 0)) * MIN;
 // Until Cookie Prep enters the real count, a batch's pans are an estimate.
 const pansText = (b) => (b.pansEstimated ? `~${b.pans}` : `${b.pans}`);
-function panEstimate(recipeId) {
-  const list = (App.state.panHistory || {})[recipeId] || [];
-  return list.length ? Math.max(1, Math.round(list.reduce((a, x) => a + x, 0) / list.length)) : S().defaultPansPerBatch;
-}
+// The recipe's own estimate (Cookie Prep enters the actual count).
+const panEstimate = (recipeId) => App.state.recipes.find((r) => r.id === recipeId)?.pansPerBatch ?? 4;
 const chillDone = (b) => b.stage === 'chilling' && now() >= b.t.chillStart + b.recipe.chillMinutes * MIN;
 const readyForPrep = (b) => b.stage === 'ready_prep' || chillDone(b);
 const panChillEnd = (b) => b.t.panChillStart + (Number(b.recipe.panChillMinutes) || 0) * MIN;
@@ -315,7 +313,7 @@ pages.prep = (arg) => {
     return `<div class="card active" style="--c:${esc(r.color)}"><div class="eyebrow">Prepping now</div>${title(b)}
       <div class="meta">Usually about <b>${b.pans} pans</b> · ${timerUp(b.t.prepStart)} elapsed · planned ${fmtMin(target - b.t.prepStart)} ${progress(b.t.prepStart, target)}</div>
       ${stepList(b, 'prep', r.prepSteps)}
-      <div class="hint">Oven: ${r.ovenTempF}°F for ${r.bakeMinutes} min — ovens hold ${S().ovenPansPerLoad} pans each.</div>
+      <div class="hint">Oven: ${r.ovenTempF}°F for ${r.bakeMinutes} min — ${S().ovens.map((o) => `${esc(o.name)} holds ${ovenCap(o.id)}`).join(', ')} pans.</div>
       <div class="pancount">
         <label for="pans-${b.id}">How many pans did you fill?</label>
         <div class="stepper">
@@ -396,9 +394,10 @@ pages.baking = () => {
 };
 
 // ---------- Oven helpers
-const ovenCap = () => Math.max(1, Math.floor(Number(S().ovenPansPerLoad) || 2));
+// Each oven has its own pan capacity.
+const ovenCap = (id) => Math.max(1, Math.floor(Number(S().ovens.find((o) => o.id === id)?.capacity ?? S().ovenPansPerLoad) || 2));
 const ovenItems = (id) => (App.state.ovens[id] || {}).items || [];
-const ovenRoom = (id) => ovenCap() - ovenItems(id).reduce((n, it) => n + it.pans, 0);
+const ovenRoom = (id) => ovenCap(id) - ovenItems(id).reduce((n, it) => n + it.pans, 0);
 const ovenBakingTemp = (id) => ovenItems(id)[0]?.tempF ?? null;
 
 /** "Load into …" / "Add to …" button for a batch, or why it can't go in that oven. */
@@ -445,7 +444,7 @@ function ovenCard(o) {
   const os = App.state.ovens[o.id] || {};
   const sched = (App.plan.ovens[o.id] || {}).schedule || [];
   const items = ovenItems(o.id);
-  const room = ovenRoom(o.id), cap = ovenCap();
+  const room = ovenRoom(o.id), cap = ovenCap(o.id);
   const heating = os.targetTempF && os.readyAt > now();
   let tempLine;
   if (!os.targetTempF) tempLine = '<span class="temp off">OFF</span>';
@@ -493,7 +492,7 @@ function ovenCard(o) {
 
   const upcoming = sched.slice(items.length ? 0 : 1, (items.length ? 0 : 1) + 4);
   return `<div class="card oven ${items.length ? 'active' : ''}">
-    <div class="ovenhead"><h3>${esc(o.name)}</h3>${tempLine}</div>
+    <div class="ovenhead"><h3>${esc(o.name)} <span class="muted small">${cap} pan${cap === 1 ? '' : 's'}</span></h3>${tempLine}</div>
     ${body}
     ${upcoming.length ? `<div class="upcoming"><div class="eyebrow">Then</div>${upcoming.map((l) => `<div class="uprow"><span class="swatch" style="--c:${esc(B(l.items[0].batchId)?.recipe.color)}"></span><span>${loadSummary(l)} <span class="muted">· ${l.temp}°F · ${fmtTime(l.start)}</span></span></div>`).join('')}</div>` : ''}
     <details class="manual"><summary>Manual temperature</summary>
@@ -838,7 +837,7 @@ pages.recipes = () => {
     <div class="grid">${list.map((r) => `<div class="card" style="--c:${esc(r.color)}">
       <div class="btitle"><span class="swatch"></span><span class="bname">${esc(r.name)}</span></div>
       ${recipeChips(r)}
-      <div class="meta">Mix ${r.mixMinutes}m · prep ${r.prepMinutesPerPan}m/pan · cool ${r.coolMinutes}m · pack ${r.packMinutes}m</div>
+      <div class="meta">Mix ${r.mixMinutes}m · ~${r.pansPerBatch} pans × ${r.prepMinutesPerPan}m prep · cool ${r.coolMinutes}m · pack ${r.packMinutes}m</div>
       <div class="btnrow">${btn('Edit', 'go', { to: `#/recipe/${r.id}` })}${btn('Queue 1 batch', 'quickAdd', { id: r.id }, '')}${btn('Delete', 'deleteRecipe', { id: r.id, name: r.name }, 'danger ghost')}</div>
     </div>`).join('') || empty('No recipes yet.')}</div>`;
 };
@@ -846,7 +845,7 @@ pages.recipes = () => {
 const STEP_GROUPS = [
   ['mix', 'Mixing', [['mixMinutes', 'Mixing time (min)'], ['ingredients', 'Ingredients (one per line)', 'textarea']], 'mixSteps', 'Mixing steps', 'minutes = optional step timer'],
   ['chill', 'Chilling', [['chillMinutes', 'Chill time (min, 0 = no chill)'], ['chillNotes', 'Chill notes', 'text'], ['mixDayBefore', 'Mix the day before (long or overnight chill) — new batches default to baking tomorrow', 'checkbox']], null],
-  ['prep', 'Prep (panning)', [['prepMinutesPerPan', 'Prep minutes per pan'], ['panChillMinutes', 'Chill pans after prep (min, 0 = no chill)'], ['panChillNotes', 'Pan chill notes', 'text']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
+  ['prep', 'Prep (panning)', [['pansPerBatch', 'Estimated pans per batch (prep enters the actual count)'], ['prepMinutesPerPan', 'Prep minutes per pan'], ['panChillMinutes', 'Chill pans after prep (min, 0 = no chill)'], ['panChillNotes', 'Pan chill notes', 'text']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
   ['bake', 'Baking', [['ovenTempF', 'Oven temp (°F)'], ['bakeMinutes', 'Bake time per load (min)']], 'bakeSteps', 'Bake reminders', 'minutes = alert at this many minutes into the bake'],
   ['cool', 'Cooling & finishing', [['coolMinutes', 'Cooling time (min)']], 'finishSteps', 'Post-bake prep (glaze, icing…)', 'minutes = do this many minutes after the pans come out of the oven'],
   ['pack', 'Packing', [['packMinutes', 'Finishing + packing time (min)'], ['yieldPerBatch', 'Cookies per batch (estimate)'], ['perContainer', 'Cookies per container (0 = not in shares)']], 'packSteps', 'Packing steps', 'minutes = optional step timer'],
@@ -859,7 +858,7 @@ function stepRow(s = {}) {
 pages.recipe = (id) => {
   App.locked = true; // don't wipe the form on live updates
   const r = id === 'new'
-    ? { name: '', color: '#c8814a', yieldPerBatch: 48, perContainer: 6, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', prepMinutesPerPan: S().prepMinutesPerPan, prepSteps: [], panChillMinutes: 0, panChillNotes: '', ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
+    ? { name: '', color: '#c8814a', yieldPerBatch: 48, perContainer: 6, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', pansPerBatch: 4, prepMinutesPerPan: 4, prepSteps: [], panChillMinutes: 0, panChillNotes: '', ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
     : App.state.recipes.find((x) => x.id === id);
   if (!r) return empty('Recipe not found. <a href="#/recipes">Back</a>');
   const field = ([k, label, type]) => type === 'checkbox'
@@ -881,6 +880,10 @@ pages.recipe = (id) => {
 };
 
 // ---------- Settings
+function ovenRow(o = { name: '', capacity: 2 }) {
+  return `<div class="steprow orow"><input class="ov-name" value="${esc(o.name)}" placeholder="Oven name"><label class="inline small">pans <input class="ov-cap" type="number" min="1" max="50" value="${esc(o.capacity ?? 2)}" inputmode="numeric"></label><button class="btn tiny ghost" data-act="rmStep" type="button">✕</button></div>`;
+}
+
 function prepRow(st = { name: '', capacity: 1 }) {
   return `<div class="steprow prow"><input class="ps-name" value="${esc(st.name)}" placeholder="Station name"><label class="inline small">batches at once <input class="ps-cap" type="number" min="1" max="20" value="${esc(st.capacity)}" inputmode="numeric"></label><button class="btn tiny ghost" data-act="rmStep" type="button">✕</button></div>`;
 }
@@ -899,16 +902,16 @@ pages.settings = () => {
         <div class="steplist" id="prep-rows">${s.prepStations.map(prepRow).join('')}</div>
         <div>${btn('+ Add prep station', 'addPrepRow', {}, 'tiny')}</div>
       </div>
-      ${list('ovens', 'Ovens', s.ovens.map((o) => o.name))}
+      <div class="field wide">Ovens <span class="small">— name, and how many pans it holds (batches at the same temperature can share)</span>
+        <div class="steplist" id="oven-rows">${s.ovens.map(ovenRow).join('')}</div>
+        <div>${btn('+ Add oven', 'addOvenRow', {}, 'tiny')}</div>
+      </div>
       ${list('coolingAreas', 'Cooling & packing areas', s.coolingAreas)}
     </div></div>
     <div class="card"><h3>Shares</h3><div class="formgrid">
       ${numf('shares', 'Number of shares (each gets 1 container of every cookie)')}
     </div><p class="muted small">Cookies per container is set on each recipe. Goal per cookie = shares × cookies per container.</p></div>
     <div class="card"><h3>Capacity & timing (used by the planner)</h3><div class="formgrid">
-      ${numf('prepMinutesPerPan', 'Default prep min per pan')}
-      ${numf('ovenPansPerLoad', 'Pans per oven (batches at the same temp can share)')}
-      ${numf('defaultPansPerBatch', 'Pans per batch estimate for new recipes')}
       ${numf('preheatMinutes', 'Preheat from cold (min)')}
       ${numf('heatUpMinutesPer25F', 'Heat up: min per +25°F')}
       ${numf('coolDownMinutesPer25F', 'Cool down: min per −25°F')}
@@ -1007,10 +1010,13 @@ const ACTIONS = {
     location.hash = '#/recipes';
   },
   addPrepRow: () => $('#prep-rows').insertAdjacentHTML('beforeend', prepRow()),
+  addOvenRow: () => $('#oven-rows').insertAdjacentHTML('beforeend', ovenRow()),
   async saveSettings() {
     const body = formData($('#settings-form'));
     body.prepStations = [...document.querySelectorAll('#prep-rows .prow')]
       .map((row) => ({ name: $('.ps-name', row).value, capacity: $('.ps-cap', row).value }));
+    body.ovens = [...document.querySelectorAll('#oven-rows .orow')]
+      .map((row) => ({ name: $('.ov-name', row).value, capacity: $('.ov-cap', row).value }));
     await api('PUT', '/api/settings', body);
     App.locked = false;
     render();

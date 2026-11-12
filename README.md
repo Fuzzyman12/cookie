@@ -37,7 +37,7 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
 ## How the day works
 
 1. **Recipes** – enter each recipe once: ingredients, mixing steps, chill time,
-   prep steps, oven temp, bake time and mid-bake reminders
+   estimated pans per batch, prep minutes per pan, prep steps, oven temp, bake time and mid-bake reminders
    (e.g. "rotate pans at 6 min"), cooling time, post-bake prep (icing, glaze),
    and packing steps. Any step can carry a timer. For post-bake prep, the
    minutes mean "this long after the pans come out of the oven" (e.g. "move to
@@ -51,11 +51,11 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    timers. Tapping *Done* sends the batch to the next station, and tells the
    person where to put it ("Put it in the Outdoor Chiller", "Move 2 pans to
    Cooling & Packing – Center").
-4. **Pan counts** – when Cookie Prep finishes a batch they enter how many pans
-   they actually filled, and the ovens are loaded from that real count. Until
-   then the planner estimates pans from the last 5 counts prep entered for that
-   recipe (or the *Pans per batch estimate* in Settings for a brand-new recipe).
-   Estimated counts show with a `~`.
+4. **Pan counts** – each recipe has an *estimated pans per batch* and *prep
+   minutes per pan*, which the planner uses for prep time and oven loads. When
+   Cookie Prep finishes a batch they enter how many pans they actually filled,
+   and the ovens are loaded from that real count. Estimated counts show with
+   a `~`.
 5. **Mixing the day before** – for doughs with long or overnight chills, tick
    *Mix the day before* on the recipe. New batches of it default to **Bake
    tomorrow** (Overview → Add batches has a bake-day choice for any recipe).
@@ -74,7 +74,7 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    on the staging rack with where they are and when they'll be ready, and the
    planner holds those loads until the chill is done. The baker can load them
    early with a confirmation.
-7. **Baking** – an oven holds up to *pans per oven* (Settings). If there's room
+7. **Baking** – each oven has its own pan capacity (Settings → Ovens). If there's room
    left and other dough at the same temperature is ready, the oven card shows
    **Fill with …** buttons, and the staging rack shows **Add to …**. Batches
    at a different temperature can't share. Each batch in the oven has its own
@@ -119,10 +119,11 @@ On every change (and every 20 s) the server simulates the rest of the day:
 - **Mix stations** – how many batches can mix at once.
 - **Chill** – timed, doesn't hold up a station.
 - **Prep** – the plan uses one batch at a time at each prep station
-  (Settings → Prep stations), each taking `prep minutes per pan × pans`. A
+  (Settings → Prep stations), each taking the recipe's `prep minutes per pan ×
+  pans`. A
   station's *batches at once* only lets staff start extra batches there by
   hand. The plan then waits until all of them are done.
-- **Ovens** – each holds `pans per oven`. Pans from different batches share an
+- **Ovens** – each holds its own number of pans (Settings → Ovens). Pans from different batches share an
   oven when they bake at the same temperature, and each batch keeps its own
   bake time. Changing temperature costs time (preheat from cold, minutes per
   25°F up or down). The planner tells the baker when to change an oven and to

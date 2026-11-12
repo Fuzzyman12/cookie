@@ -7,13 +7,13 @@ const defaultSettings = () => ({
   chillLocations: ['Fridge', 'Outdoor Chiller'],
   // Each prep station can work on `capacity` batches side by side.
   prepStations: [{ name: 'Cookie Prep', capacity: 1 }],
-  prepMinutesPerPan: 4, // default when a recipe doesn't say
+  prepMinutesPerPan: 4, // only used to fill in older recipes; each recipe sets its own
   ovens: [
-    { id: 'oven1', name: 'Island Oven' },
-    { id: 'oven2', name: 'Corner Oven' },
+    { id: 'oven1', name: 'Island Oven', capacity: 2 }, // pans each oven holds
+    { id: 'oven2', name: 'Corner Oven', capacity: 2 },
   ],
-  ovenPansPerLoad: 2,
-  defaultPansPerBatch: 4,
+  ovenPansPerLoad: 2, // only used for older data; each oven has its own capacity
+  defaultPansPerBatch: 4, // only used to fill in older recipes
   shares: 10, // every share gets one container of each cookie (recipe sets cookies per container) // planning estimate until Cookie Prep has reported real counts for a recipe
   preheatMinutes: 15, // cold oven to temp
   heatUpMinutesPer25F: 3,
@@ -35,6 +35,7 @@ const recipes = () => [
     mixSteps: [step('Cream butter and sugars until fluffy', 3), step('Beat in eggs one at a time, then vanilla'), step('Whisk flour, baking soda and salt in a separate bowl'), step('Mix dry into wet on low just until combined'), step('Fold in chocolate chips')],
     chillMinutes: 60,
     chillNotes: 'Cover bowl with plastic wrap. Label with batch number.',
+    pansPerBatch: 4, // estimate; Cookie Prep enters the actual count
     prepMinutesPerPan: 4,
     prepSteps: [step('Line pans with parchment'), step('Scoop 1½ Tbsp balls (#40 scoop), 12 per pan, 2" apart'), step('Sprinkle flaky salt on top'), step('Set pans on the Oven Staging Rack')],
     ovenTempF: 350,
@@ -57,6 +58,7 @@ const recipes = () => [
     mixSteps: [step('Cream butter and sugar', 3), step('Beat in eggs and vanilla'), step('Mix in dry ingredients on low'), step('Divide dough into 2 discs, wrap in plastic')],
     chillMinutes: 90,
     chillNotes: 'Discs must be firm before rolling.',
+    pansPerBatch: 3, // estimate; Cookie Prep enters the actual count
     prepMinutesPerPan: 7,
     prepSteps: [step('Roll dough ¼" thick on floured surface'), step('Cut shapes, 12 per pan'), step('Re-roll scraps once only')],
     ovenTempF: 375,
@@ -79,6 +81,7 @@ const recipes = () => [
     mixSteps: [step('Cream butter and sugar', 2), step('Beat in eggs'), step('Mix in dry ingredients'), step('Mix cinnamon sugar in a shallow bowl for prep')],
     chillMinutes: 0,
     chillNotes: '',
+    pansPerBatch: 3, // estimate; Cookie Prep enters the actual count
     prepMinutesPerPan: 5,
     prepSteps: [step('Roll 1½" balls'), step('Roll each ball in cinnamon sugar'), step('12 per pan, 2" apart')],
     ovenTempF: 400,
@@ -101,6 +104,7 @@ const recipes = () => [
     mixSteps: [step('Cream butter and sugars', 3), step('Beat in eggs and vanilla'), step('Mix in flour, soda, cinnamon'), step('Stir in oats and raisins')],
     chillMinutes: 0,
     chillNotes: '',
+    pansPerBatch: 4, // estimate; Cookie Prep enters the actual count
     prepMinutesPerPan: 4,
     prepSteps: [step('Scoop 2 Tbsp balls, 12 per pan'), step('Flatten slightly with palm')],
     panChillMinutes: 20,
@@ -124,7 +128,7 @@ const seedState = () => ({
   ovens: {},
   counters: {},
   // recipeId -> pans actually filled, as entered at Cookie Prep (starting guesses here)
-  panHistory: { 'r-choc-chip': [4], 'r-sugar': [3], 'r-snickerdoodle': [3], 'r-oatmeal': [4] },
+  panHistory: {},
 });
 
 module.exports = { seedState, defaultSettings };

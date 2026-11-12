@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const { computePlan, changeoverMs, localDate } = require('./scheduler');
+const { computePlan, changeoverMs, localDate, ovenCapacity } = require('./scheduler');
 const { seedState, defaultSettings } = require('./seed');
 
 const PORT = Number(process.env.PORT) || 8080;
@@ -48,14 +48,15 @@ function normalize(s) {
     if (b.coolGroups) continue;
     b.coolGroups = ['cooling', 'packing', 'done'].includes(b.stage) ? [{ pans: b.pans, outAt: b.t?.coolStart || Date.now(), ovenId: null }] : [];
   }
-  // Pans per batch used to live on the recipe; it's now entered at Cookie Prep.
-  // Keep any old value as the first data point for the estimate.
+  // Each recipe carries its own estimated pans per batch and prep minutes per
+  // pan (Cookie Prep still enters the actual pan count). Fill them in for older
+  // data from what prep reported before, or the old kitchen-wide defaults.
   for (const r of s.recipes) {
-    if (r.pansPerBatch !== undefined) {
-      rememberPans(s, r.id, r.pansPerBatch, true);
-      delete r.pansPerBatch;
-    }
+    if (r.pansPerBatch === undefined) r.pansPerBatch = averagePans(s, r.id) ?? Math.max(1, Math.round(Number(s.settings.defaultPansPerBatch) || 4));
+    if (r.prepMinutesPerPan === undefined || r.prepMinutesPerPan === null) r.prepMinutesPerPan = Number(s.settings.prepMinutesPerPan) || 4;
   }
+  // Each oven has its own pan capacity (older data had one setting for all).
+  for (const o of s.settings.ovens) if (o.capacity === undefined) o.capacity = ovenCapacity(o, s.settings);
   for (const o of s.settings.ovens) s.ovens[o.id] ||= { targetTempF: null, readyAt: 0, items: [] };
   // An oven used to hold one load (`current`); it now holds a list of pans
   // from one or more batches at the same temperature (`items`).
@@ -77,6 +78,23 @@ function resolveBakeDate(v) {
     return String(v);
   }
   fail('Bake day must be today, tomorrow or a date (YYYY-MM-DD)');
+}
+
+// ---------------------------------------------------------------- ovens
+// Accepts [{ name, capacity }], plain names, or text with one name per line.
+// Ovens are identified by position (oven1, oven2, …) so their state carries over.
+function cleanOvens(v, current, fallbackCap) {
+  const list = Array.isArray(v) ? v : String(v || '').split('\n');
+  const out = [];
+  for (const item of list) {
+    const name = String(typeof item === 'object' && item ? item.name : item || '').trim();
+    if (!name) continue;
+    const i = out.length;
+    const cap = Math.round(Number(typeof item === 'object' && item ? item.capacity : NaN));
+    const keep = current[i]?.capacity ?? fallbackCap;
+    out.push({ id: 'oven' + (i + 1), name, capacity: Math.min(50, Math.max(1, Number.isFinite(cap) ? cap : keep)) });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- prep stations
@@ -110,11 +128,14 @@ function rememberPans(s, recipeId, pans, onlyIfEmpty = false) {
   const keep = 5; // recent counts to average
   if (list.length > keep) list.splice(0, list.length - keep);
 }
-/** Expected pans for a new batch: average of what Cookie Prep reported recently. */
-function estimatePans(s, recipeId) {
+/** Average of the pan counts Cookie Prep reported recently (null if none). */
+function averagePans(s, recipeId) {
   const list = s.panHistory[recipeId] || [];
-  if (!list.length) return Math.max(1, Math.round(Number(s.settings.defaultPansPerBatch) || 4));
-  return Math.max(1, Math.round(list.reduce((a, b) => a + b, 0) / list.length));
+  return list.length ? Math.max(1, Math.round(list.reduce((a, b) => a + b, 0) / list.length)) : null;
+}
+/** Expected pans for a new batch: the recipe's own estimate. */
+function estimatePans(s, recipe) {
+  return Math.max(1, Math.round(Number(recipe.pansPerBatch) || averagePans(s, recipe.id) || 4));
 }
 
 let saveTimer = null;
@@ -205,7 +226,8 @@ function cleanRecipe(input, existing = {}) {
     chillNotes: String(input.chillNotes || ''),
     // Long/overnight chill: mix on the day before the bake day.
     mixDayBefore: input.mixDayBefore === true || input.mixDayBefore === 'true' || input.mixDayBefore === 'on',
-    prepMinutesPerPan: n(input.prepMinutesPerPan, S().prepMinutesPerPan),
+    pansPerBatch: Math.round(n(input.pansPerBatch, existing.pansPerBatch ?? 4, 1)), // estimate; prep enters the actual
+    prepMinutesPerPan: n(input.prepMinutesPerPan, existing.prepMinutesPerPan ?? 4),
     prepSteps: steps(input.prepSteps),
     panChillMinutes: n(input.panChillMinutes, 0), // chill the panned dough before baking (0 = none)
     panChillNotes: String(input.panChillNotes || ''),
@@ -236,6 +258,7 @@ function applyRecipe(b, r) {
   }
   b.recipe = structuredClone(r);
   b.label = `${r.name} #${b.number}`;
+  if (b.pansEstimated) b.pans = estimatePans(state, r); // not prepped yet: use the new estimate
   for (const o of Object.values(state.ovens)) {
     for (const it of o.items) {
       if (it.batchId !== b.id) continue;
@@ -267,7 +290,7 @@ function pullFromOvens(b) {
 }
 
 // ---------------------------------------------------------------- oven contents
-const ovenCap = () => Math.max(1, Math.floor(n(S().ovenPansPerLoad, 2, 1)));
+const ovenCap = (ovenId) => ovenCapacity(S().ovens.find((o) => o.id === ovenId), S());
 const pansIn = (o) => o.items.reduce((sum, it) => sum + it.pans, 0);
 const itemEnd = (it) => it.startedAt + (it.bakeMinutes + (it.extraMinutes || 0)) * 60000;
 /** The pans the request means: by itemId, or the only thing in the oven. */
@@ -353,8 +376,8 @@ const actions = {
   loadOven(b, { ovenId }) {
     need(b, 'staged', 'baking', 'pan_chilling'); // baker may load straight from the chiller
     const o = oven(ovenId);
-    const room = ovenCap() - pansIn(o);
-    if (room <= 0) fail(`${ovenName(ovenId)} is full (${ovenCap()} pans)`, 409);
+    const room = ovenCap(ovenId) - pansIn(o);
+    if (room <= 0) fail(`${ovenName(ovenId)} is full (${ovenCap(ovenId)} pans)`, 409);
     const tempF = n(b.recipe.ovenTempF, 350);
     // Batches can share an oven only at the same temperature.
     const other = o.items.find((it) => it.tempF !== tempF);
@@ -375,7 +398,7 @@ const actions = {
       setStage(b, 'baking', 'Ovens');
     }
     const sharing = o.items.length > 1;
-    return { message: `${pans} pan${pans > 1 ? 's' : ''} of ${b.label} into ${ovenName(ovenId)}${sharing ? ` — now ${pansIn(o)} of ${ovenCap()} pans` : ''}` };
+    return { message: `${pans} pan${pans > 1 ? 's' : ''} of ${b.label} into ${ovenName(ovenId)}${sharing ? ` — now ${pansIn(o)} of ${ovenCap(ovenId)} pans` : ''}` };
   },
   finishCooling(b) {
     need(b, 'cooling');
@@ -502,8 +525,6 @@ app.post('/api/recipes/import', route((req) => {
       updated++;
     }
     else { recipe = cleanRecipe(raw, raw.id ? { id: String(raw.id) } : {}); state.recipes.push(recipe); added++; }
-    // Files exported before pans moved to Cookie Prep: use it as a starting estimate.
-    if (raw.pansPerBatch !== undefined) rememberPans(state, recipe.id, raw.pansPerBatch, true);
   }
   return { message: `Imported ${added} new, updated ${updated}` };
 }));
@@ -513,7 +534,7 @@ app.post('/api/batches', route((req) => {
   const r = findRecipe(req.body.recipeId);
   const count = Math.min(50, Math.max(1, Math.floor(n(req.body.count, 1, 1))));
   const now = Date.now();
-  const pans = estimatePans(state, r.id);
+  const pans = estimatePans(state, r);
   // Mix-the-day-before recipes default to baking tomorrow.
   const bakeDate = resolveBakeDate(req.body.bakeDay ?? (r.mixDayBefore ? 'tomorrow' : 'today'));
   for (let k = 0; k < count; k++) {
@@ -635,14 +656,13 @@ app.post('/api/alarms/dismiss', route((req) => {
 app.put('/api/settings', route((req) => {
   const body = req.body || {};
   const cur = S();
-  const names = strList(body.ovens ?? cur.ovens.map((o) => o.name));
   const next = {
     ...cur,
     kitchenName: String(body.kitchenName ?? cur.kitchenName).trim() || 'Cookie Kitchen',
     mixStations: strList(body.mixStations ?? cur.mixStations),
     chillLocations: strList(body.chillLocations ?? cur.chillLocations),
     coolingAreas: strList(body.coolingAreas ?? cur.coolingAreas),
-    ovens: names.map((name, i) => ({ id: 'oven' + (i + 1), name })),
+    ovens: cleanOvens(body.ovens ?? cur.ovens, cur.ovens, ovenCapacity(null, cur)),
     prepStations: cleanPrepStations(body.prepStations ?? cur.prepStations),
     prepMinutesPerPan: n(body.prepMinutesPerPan, cur.prepMinutesPerPan),
     ovenPansPerLoad: Math.round(n(body.ovenPansPerLoad, cur.ovenPansPerLoad, 1)),

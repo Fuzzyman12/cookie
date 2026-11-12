@@ -26,7 +26,7 @@ const ascending = (list) => list.every((t, i) => i === 0 || t >= list[i - 1]);
 {
   const A = recipe('a350', 350, 10), B2 = recipe('b350', 350, 12), C = recipe('c400', 400, 9), D = recipe('d325', 325, 11);
   const s = kitchen([batch(A, 'staged', 3), batch(C, 'staged', 2), batch(B2, 'staged', 3), batch(D, 'staged', 2)],
-    { ovens: [{ id: 'oven1', name: 'Oven' }], ovenPansPerLoad: 4 });
+    { ovens: [{ id: 'oven1', name: 'Oven', capacity: 4 }] });
   const plan = computePlan(s, now);
   const sched = plan.ovens.oven1.schedule;
   assert.deepStrictEqual(sched.map((l) => l.temp), [325, 350, 350, 400], 'low → high');
@@ -42,7 +42,7 @@ const ascending = (list) => list.every((t, i) => i === 0 || t >= list[i - 1]);
 {
   const A = recipe('a350', 350, 10), B2 = recipe('b350', 350, 10), C = recipe('c375', 375, 10);
   const inOven = batch(A, 'baking', 2, { pansInOven: 2 });
-  const s = kitchen([inOven, batch(B2, 'staged', 2), batch(C, 'staged', 2)], { ovens: [{ id: 'oven1', name: 'Oven' }], ovenPansPerLoad: 4 });
+  const s = kitchen([inOven, batch(B2, 'staged', 2), batch(C, 'staged', 2)], { ovens: [{ id: 'oven1', name: 'Oven', capacity: 4 }] });
   s.ovens.oven1 = { targetTempF: 350, readyAt: 0, items: [{ id: 'x', batchId: inOven.id, label: inOven.label, pans: 2, startedAt: now - 3 * MIN, bakeMinutes: 10, tempF: 350, extraMinutes: 0 }] };
   const plan = computePlan(s, now);
   const first = plan.ovens.oven1.schedule[0];
@@ -107,5 +107,15 @@ const ascending = (list) => list.every((t, i) => i === 0 || t >= list[i - 1]);
   assert.strictEqual(plan.batches[ahead.id].prepReady, nextMorning, 'chill already done: ready for prep right away');
   assert.ok(plan.mixQueue.includes(later.id), "tomorrow's normal batch is in tomorrow's mixing queue");
   console.log('✓ mix the day before: mixed today, out of today\'s ovens, ready for prep tomorrow');
+}
+// 5) Ovens with different capacities: the bigger oven takes bigger loads.
+{
+  const A = recipe('a350', 350, 10);
+  const s = kitchen([batch(A, 'staged', 6)], { ovens: [{ id: 'big', name: 'Big', capacity: 4 }, { id: 'small', name: 'Small', capacity: 2 }] });
+  const plan = computePlan(s, now);
+  const pansIn = (id) => plan.ovens[id].schedule.map((l) => l.items.reduce((n, it) => n + it.pans, 0));
+  assert.deepStrictEqual(pansIn('big'), [4]);
+  assert.deepStrictEqual(pansIn('small'), [2]);
+  console.log('✓ per-oven capacity: 6 pans → 4 in the big oven, 2 in the small one');
 }
 console.log('✓ all scheduler tests passed');
