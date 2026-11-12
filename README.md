@@ -64,7 +64,8 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    post-bake or step timer finishes, the tablet shows a red alarm and beeps
    every few seconds until someone taps **OK**. An alarm also stops by itself
    when it's handled: pans unloaded, time added, step checked off, batch moved
-   on. Dismissals are remembered per tablet. Tap the screen once after loading
+   on. Tapping OK on any tablet silences that alarm on every tablet, and a
+   tablet opened later won't raise it again. Tap the screen once after loading
    the page to enable sound (browser rule).
 
 ## How the scheduling works
