@@ -36,7 +36,12 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
 1. **Recipes** – enter each recipe once: ingredients, mixing steps, chill time,
    prep steps, oven temp, bake time and mid-bake reminders
    (e.g. "rotate pans at 6 min"), cooling time, post-bake prep (icing, glaze),
-   and packing steps. Any step can carry a timer.
+   and packing steps. Any step can carry a timer. For post-bake prep, the
+   minutes mean "this long after the pans come out of the oven" (e.g. "move to
+   cooling rack at 5 min").
+   Editing a recipe updates every batch still in progress, including a load
+   that's already in the oven. Checkmarks are kept unless that section's steps
+   changed.
 2. **Overview** – queue batches ("3 × Chocolate Chip"). Mark a batch *Rush* to
    force it to the front.
 3. **Stations** – each tablet shows an "Up next" card, checklists, and live
@@ -48,9 +53,19 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    then the planner estimates pans from the last 5 counts prep entered for that
    recipe (or the *Pans per batch estimate* in Settings for a brand-new recipe).
    Estimated counts show with a `~`.
-5. **Alerts** – tablets beep, vibrate and flash when chilling, baking (and
-   bake reminders), cooling, oven preheats or step timers finish. Tap the
-   screen once after loading the page to enable sound (browser rule).
+5. **Baking** – the oven card has **+1 / +5 / +10 min** buttons and a custom
+   box to add bake time to the load in the oven.
+6. **Cooling** – pans go into cooling the moment they're unloaded, even if
+   the rest of the batch is still baking. Each oven load gets its own group on
+   the Cooling & Packing tablet ("Pans 1–2, out of Island Oven at 10:42") with
+   its own cooling timer and its own post-bake checklist and timers. When every
+   group has cooled, tap **All cooled → Pack**.
+7. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
+   post-bake or step timer finishes, the tablet shows a red alarm and beeps
+   every few seconds until someone taps **OK**. An alarm also stops by itself
+   when it's handled: pans unloaded, time added, step checked off, batch moved
+   on. Dismissals are remembered per tablet. Tap the screen once after loading
+   the page to enable sound (browser rule).
 
 ## How the scheduling works
 

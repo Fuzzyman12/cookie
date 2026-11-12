@@ -125,7 +125,7 @@ function simulate(ctx, order) {
     let free = Math.max(now, st.readyAt || 0);
     const temp = st.targetTempF ?? null;
     if (st.current) {
-      const end = Math.max(now, st.current.startedAt + st.current.bakeMinutes * MIN);
+      const end = Math.max(now, st.current.startedAt + (st.current.bakeMinutes + (st.current.extraMinutes || 0)) * MIN);
       free = Math.max(free, end);
       const pb = P[st.current.batchId];
       if (pb) pb.loads.push({ ovenId: o.id, batchId: st.current.batchId, start: st.current.startedAt, end, temp: st.current.tempF, pans: st.current.pans, inOven: true });
@@ -179,7 +179,9 @@ function simulate(ctx, order) {
   for (const b of active) {
     const p = P[b.id];
     if (b.stage === 'cooling') {
-      p.coolEnd = Math.max(now, (b.t.coolStart || now) + b.d.cool);
+      // Batch is cool once the last pans out of the oven have cooled.
+      const lastOut = Math.max(b.t.allOut || 0, ...(b.coolGroups || []).map((g) => g.outAt), b.t.coolStart || 0) || now;
+      p.coolEnd = Math.max(now, lastOut + b.d.cool);
     } else if (b.stage === 'packing') {
       p.coolEnd = b.t.packStart;
     } else {

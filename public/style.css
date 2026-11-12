@@ -234,3 +234,33 @@ textarea { width: 100%; resize: vertical; }
 .stepper { display: flex; gap: .5rem; align-items: center; }
 .stepper .btn { min-width: 64px; justify-content: center; font-size: 1.6rem; }
 .stepper input { width: 110px; text-align: center; font-size: 1.6rem; font-weight: 800; min-height: 60px; }
+
+/* ---------- alarms (beep until dismissed) */
+/* Sits in the page flow under the top bar (pushes content down instead of covering it). */
+.alarms { position: sticky; top: 58px; z-index: 9; display: flex; flex-direction: column; gap: .4rem; max-width: 1500px; margin: 0 auto; padding: 0 1rem; }
+.alarms:not(:empty) { padding-top: .6rem; padding-bottom: .2rem; }
+.alarm { display: flex; align-items: center; gap: .8rem; background: var(--bake); color: #fff; border-radius: 14px; padding: .7rem .7rem .7rem 1.1rem; box-shadow: 0 8px 28px rgba(0,0,0,.35); font-size: 1.2rem; font-weight: 700; animation: alarm-pulse 1s infinite alternate; }
+.alarm .amsg { flex: 1; }
+.alarm .btn { min-width: 90px; justify-content: center; }
+.alarm-all { display: flex; justify-content: flex-end; }
+@keyframes alarm-pulse { from { background: var(--bake); } to { background: #a8321b; } }
+body.alarming { animation: flash .8s infinite alternate; }
+.timer.hidden { display: none; }
+.timer.good.over { color: var(--ok); }
+
+/* ---------- bake extension */
+.extend { margin-top: .6rem; padding-top: .5rem; border-top: 1px dashed var(--line); }
+.extend .btnrow { margin-top: .3rem; }
+.extend input { width: 90px; }
+
+/* ---------- cooling groups */
+.pangroup { border: 1px solid var(--line); border-radius: 12px; padding: .6rem .8rem; margin: .6rem 0; background: #fff; }
+.pangroup.cooled { background: #f0fbf3; border-color: #bfe5cc; }
+.ghead { font-size: .95rem; }
+.gcool { font-weight: 700; margin-top: .3rem; }
+.pangroup .steps { margin: .3rem 0 0; }
+.due { font-size: .85rem; }
+/* Label flips as soon as the timer passes zero (tick() adds .over). */
+.gcool .lbl-cooled { display: none; color: var(--ok); }
+.gcool:has(.timer.over) .lbl-cooled { display: inline; }
+.gcool:has(.timer.over) .lbl-cooling { display: none; }

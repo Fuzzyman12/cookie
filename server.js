@@ -35,6 +35,10 @@ function normalize(s) {
   s.ovens ||= {};
   s.counters ||= {};
   s.panHistory ||= {};
+  for (const b of s.batches) {
+    if (b.coolGroups) continue;
+    b.coolGroups = ['cooling', 'packing', 'done'].includes(b.stage) ? [{ pans: b.pans, outAt: b.t?.coolStart || Date.now(), ovenId: null }] : [];
+  }
   // Pans per batch used to live on the recipe; it's now entered at Cookie Prep.
   // Keep any old value as the first data point for the estimate.
   for (const r of s.recipes) {
@@ -163,6 +167,30 @@ function cleanRecipe(input, existing = {}) {
   };
 }
 
+// Checklist keys and the recipe field holding their steps. Post-bake checks are
+// per cooling group ("finish-0", "finish-1", ...).
+const STEP_FIELDS = { mix: 'mixSteps', prep: 'prepSteps', finish: 'finishSteps', pack: 'packSteps' };
+
+/** Push an edited recipe into a batch that is still in progress. */
+function applyRecipe(b, r) {
+  const texts = (list) => JSON.stringify((list || []).map((s) => s.text));
+  for (const [key, field] of Object.entries(STEP_FIELDS)) {
+    if (texts(b.recipe[field]) === texts(r[field])) continue;
+    // Steps changed: old ticks would line up with the wrong steps, so clear them.
+    for (const store of [b.checks, b.stepTimers]) {
+      for (const k of Object.keys(store)) if (k === key || k.startsWith(key + '-')) delete store[k];
+    }
+  }
+  b.recipe = structuredClone(r);
+  b.label = `${r.name} #${b.number}`;
+  for (const o of Object.values(state.ovens)) {
+    if (o.current?.batchId !== b.id) continue;
+    o.current.bakeMinutes = r.bakeMinutes;
+    o.current.tempF = r.ovenTempF;
+    o.current.label = b.label;
+  }
+}
+
 function setStage(b, stage, location) {
   b.stage = stage;
   if (location !== undefined) b.location = location;
@@ -245,6 +273,7 @@ const actions = {
       batchId: b.id, label: b.label, pans, startedAt: Date.now(),
       bakeMinutes: n(b.recipe.bakeMinutes, 10, 1), tempF: n(b.recipe.ovenTempF, 350),
       loadNo: b.loadCount, loadsTotal: Math.ceil(b.pans / cap),
+      extraMinutes: 0, // added by the baker while baking
     };
     b.pansInOven += pans;
     if (b.stage === 'staged') {
@@ -280,7 +309,11 @@ const actions = {
     const order = ['queued', 'mixing', 'chilling', 'ready_prep', 'prepping', 'staged', 'baking', 'cooling', 'packing', 'done'];
     if (!order.includes(stage)) fail('Unknown stage');
     pullFromOvens(b);
-    if (order.indexOf(stage) <= order.indexOf('staged')) b.pansBaked = 0;
+    if (order.indexOf(stage) <= order.indexOf('staged')) { b.pansBaked = 0; b.coolGroups = []; }
+    if (['cooling', 'packing', 'done'].includes(stage)) {
+      const out = b.coolGroups.reduce((sum, g) => sum + g.pans, 0);
+      if (out < b.pans) b.coolGroups.push({ pans: b.pans - out, outAt: now, ovenId: null });
+    }
     let loc = b.location;
     switch (stage) {
       case 'queued': b.t = {}; loc = 'Queue'; break;
@@ -294,7 +327,7 @@ const actions = {
       case 'prepping': b.t.prepStart = now; loc = 'Cookie Prep'; break;
       case 'staged': loc = 'Oven Staging Rack'; break;
       case 'baking': b.t.bakeStart = now; loc = 'Ovens'; break;
-      case 'cooling': b.pansBaked = b.pans; b.t.coolStart = now; loc = b.coolingArea ||= pickCoolingArea(); break;
+      case 'cooling': b.pansBaked = b.pans; b.t.coolStart ||= now; b.t.allOut = now; loc = b.coolingArea ||= pickCoolingArea(); break;
       case 'packing': b.pansBaked = b.pans; b.t.packStart = now; loc = b.coolingArea ||= pickCoolingArea(); break;
       case 'done': b.t.done = now; loc = 'Done'; break;
     }
@@ -329,8 +362,10 @@ app.post('/api/recipes', route((req) => {
 app.put('/api/recipes/:id', route((req) => {
   const i = state.recipes.findIndex((r) => r.id === req.params.id);
   if (i < 0) fail('Recipe not found', 404);
-  state.recipes[i] = cleanRecipe(req.body, state.recipes[i]);
-  return { recipe: state.recipes[i] };
+  const r = (state.recipes[i] = cleanRecipe(req.body, state.recipes[i]));
+  const active = state.batches.filter((b) => b.recipeId === r.id && b.stage !== 'done');
+  for (const b of active) applyRecipe(b, r);
+  return { recipe: r, message: active.length ? `Updated ${active.length} active batch${active.length > 1 ? 'es' : ''}` : undefined };
 }));
 app.delete('/api/recipes/:id', route((req) => {
   findRecipe(req.params.id);
@@ -346,7 +381,11 @@ app.post('/api/recipes/import', route((req) => {
   for (const raw of list) {
     const i = state.recipes.findIndex((r) => r.id === raw.id);
     let recipe;
-    if (i >= 0) { recipe = state.recipes[i] = cleanRecipe(raw, state.recipes[i]); updated++; }
+    if (i >= 0) {
+      recipe = state.recipes[i] = cleanRecipe(raw, state.recipes[i]);
+      for (const b of state.batches) if (b.recipeId === recipe.id && b.stage !== 'done') applyRecipe(b, recipe);
+      updated++;
+    }
     else { recipe = cleanRecipe(raw, raw.id ? { id: String(raw.id) } : {}); state.recipes.push(recipe); added++; }
     // Files exported before pans moved to Cookie Prep: use it as a starting estimate.
     if (raw.pansPerBatch !== undefined) rememberPans(state, recipe.id, raw.pansPerBatch, true);
@@ -365,7 +404,7 @@ app.post('/api/batches', route((req) => {
     state.batches.push({
       id: newId(),
       recipeId: r.id,
-      recipe: structuredClone(r), // snapshot: editing the recipe later won't disturb a running batch
+      recipe: structuredClone(r), // copy, so deleting the recipe can't break a running batch (edits are pushed in by applyRecipe)
       number,
       label: `${r.name} #${number}`,
       stage: 'queued',
@@ -377,6 +416,7 @@ app.post('/api/batches', route((req) => {
       pansBaked: 0,
       pansInOven: 0,
       coolingArea: null,
+      coolGroups: [], // one entry per oven load taken out: { pans, outAt, ovenId }
       t: {},
       checks: {},
       stepTimers: {},
@@ -413,10 +453,23 @@ app.post('/api/ovens/:id/temp', route((req) => {
   const to = raw === null || raw === '' || raw === undefined ? null : n(raw, null, 100);
   o.readyAt = to === null ? 0 : Date.now() + changeoverMs(o.targetTempF, to, S());
   o.targetTempF = to;
+  o.readyConfirmed = false;
   return { message: to === null ? `${ovenName(req.params.id)} off` : `${ovenName(req.params.id)} set to ${to}°F` };
 }));
 app.post('/api/ovens/:id/ready', route((req) => {
-  oven(req.params.id).readyAt = Date.now();
+  const o = oven(req.params.id);
+  o.readyAt = Date.now();
+  o.readyConfirmed = true; // baker checked it, no need to alarm
+}));
+app.post('/api/ovens/:id/extend', route((req) => {
+  const o = oven(req.params.id);
+  const c = o.current || fail('Nothing is baking in this oven', 409);
+  const minutes = Number(req.body.minutes);
+  if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 120) fail('Add between 0 and 120 minutes');
+  c.extraMinutes = (c.extraMinutes || 0) + minutes;
+  const end = c.startedAt + (c.bakeMinutes + c.extraMinutes) * 60000;
+  const at = new Date(end).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return { message: `Added ${minutes} min to ${c.label} — now done at ${at}` };
 }));
 app.post('/api/ovens/:id/unload', route((req) => {
   const o = oven(req.params.id);
@@ -424,11 +477,16 @@ app.post('/api/ovens/:id/unload', route((req) => {
   o.current = null;
   const b = state.batches.find((x) => x.id === c.batchId);
   if (!b) return;
+  const now = Date.now();
   b.pansInOven = Math.max(0, b.pansInOven - c.pans);
   b.pansBaked += c.pans;
   b.coolingArea ||= pickCoolingArea();
-  if (b.pansBaked >= b.pans) {
-    b.t.coolStart = Date.now();
+  // These pans start cooling (and their post-bake clock starts) right now,
+  // even if the rest of the batch is still on the rack or in another oven.
+  b.coolGroups.push({ pans: c.pans, outAt: now, ovenId: req.params.id });
+  b.t.coolStart ||= now;
+  if (b.pansBaked >= b.pans && b.pansInOven === 0) {
+    b.t.allOut = now;
     setStage(b, 'cooling', b.coolingArea);
   }
   return { message: `Move ${c.pans} pan${c.pans > 1 ? 's' : ''} of ${b.label} to ${b.coolingArea}` };

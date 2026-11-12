@@ -1,7 +1,7 @@
 'use strict';
 /* Cookie Flow tablet client. Vanilla JS, re-renders on every server push. */
 
-const App = { state: null, plan: null, offset: 0, connected: false, audio: null, fired: new Set(), locked: false, routeKey: null };
+const App = { state: null, plan: null, offset: 0, connected: false, audio: null, alarms: new Map(), dismissed: new Set(), locked: false, routeKey: null };
 const MIN = 60000;
 const now = () => Date.now() + App.offset;
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -47,6 +47,7 @@ const P = (id) => (App.plan && App.plan.batches[id]) || { loads: [] };
 const inStage = (...st) => App.state.batches.filter((b) => st.includes(b.stage));
 const ovenName = (id) => (S().ovens.find((o) => o.id === id) || {}).name || id;
 const remainingPans = (b) => b.pans - b.pansBaked - b.pansInOven;
+const loadEnd = (cur) => cur.startedAt + (cur.bakeMinutes + (cur.extraMinutes || 0)) * MIN;
 // Until Cookie Prep enters the real count, a batch's pans are an estimate.
 const pansText = (b) => (b.pansEstimated ? `~${b.pans}` : `${b.pans}`);
 function panEstimate(recipeId) {
@@ -62,8 +63,9 @@ const btn = (label, act, data = {}, cls = '') =>
 const batchBtn = (b, action, label, body = {}, cls = '', confirm = '') =>
   btn(label, 'batch', { id: b.id, action, body, ...(confirm ? { confirm } : {}) }, cls);
 
-const timerDown = (end, alertKey, msg) =>
-  `<span class="timer" data-end="${end}"${alertKey ? ` data-alert="${esc(alertKey)}" data-msg="${esc(msg)}"` : ''}>${fmtDur(end - now())}</span>`;
+// cls: 'good' = going past zero is fine (shown green), 'hidden' = alarm marker only.
+const timerDown = (end, alertKey, msg, cls = '') =>
+  `<span class="timer ${cls}" data-end="${end}"${alertKey ? ` data-alert="${esc(alertKey)}" data-msg="${esc(msg)}"` : ''}>${fmtDur(end - now())}</span>`;
 const timerUp = (start) => `<span class="timer up" data-start="${start}">${fmtDur(now() - start)}</span>`;
 const progress = (start, end) => `<div class="progress"><div data-pstart="${start}" data-pend="${end}"></div></div>`;
 const relTime = (t) => `<span class="rel" data-at="${t}">${rel(t)}</span>`;
@@ -284,23 +286,32 @@ function ovenCard(o) {
   let tempLine;
   if (!os.targetTempF) tempLine = '<span class="temp off">OFF</span>';
   else if (heating) tempLine = `<span class="temp heating">→ ${os.targetTempF}°F</span> <span class="muted">ready in</span> ${timerDown(os.readyAt, `oven-ready-${o.id}-${os.readyAt}`, `${o.name} should be at ${os.targetTempF}°F`)} ${btn("It's at temp", 'ovenReady', { oven: o.id }, 'tiny')}`;
-  else tempLine = `<span class="temp">${os.targetTempF}°F</span>`;
+  else {
+    tempLine = `<span class="temp">${os.targetTempF}°F</span>`;
+    // Keep the "at temp" alarm alive until dismissed (unless the baker confirmed it).
+    if (os.readyAt && !os.readyConfirmed) tempLine += timerDown(os.readyAt, `oven-ready-${o.id}-${os.readyAt}`, `${o.name} should be at ${os.targetTempF}°F`, 'hidden');
+  }
 
   let body = '';
   const next = sched[0];
   if (cur) {
     const b = B(cur.batchId);
-    const end = cur.startedAt + cur.bakeMinutes * MIN;
+    const end = loadEnd(cur);
     const bakeSteps = (b?.recipe.bakeSteps || []).map((s, i) => {
       if (!s.minutes) return `<li><span class="stext">${esc(s.text)}</span></li>`;
       const at = cur.startedAt + s.minutes * MIN;
       const past = now() >= at;
-      return `<li class="${past ? 'checked' : ''}"><span class="stext">${esc(s.text)}</span> <span class="muted">@ ${s.minutes} min</span> ${past ? '' : timerDown(at, `bakestep-${o.id}-${cur.startedAt}-${i}`, `${o.name}: ${s.text}`)}</li>`;
+      return `<li class="${past ? 'checked' : ''}"><span class="stext">${esc(s.text)}</span> <span class="muted">@ ${s.minutes} min</span> ${timerDown(at, `bakestep-${o.id}-${cur.startedAt}-${i}`, `${o.name}: ${s.text}`, 'good')}</li>`;
     }).join('');
+    // The alarm key includes the end time, so adding time replaces the alarm.
     body = `<div class="eyebrow">Baking</div>${b ? title(b) : esc(cur.label)}
-      <div class="meta">Load ${cur.loadNo} of ${cur.loadsTotal} · ${cur.pans} pan${cur.pans > 1 ? 's' : ''} at ${cur.tempF}°F</div>
-      <div class="bigtimer">${timerDown(end, `bake-${o.id}-${cur.startedAt}`, `PULL ${cur.label} from ${o.name}!`)}</div>${progress(cur.startedAt, end)}
+      <div class="meta">Load ${cur.loadNo} of ${cur.loadsTotal} · ${cur.pans} pan${cur.pans > 1 ? 's' : ''} at ${cur.tempF}°F · ${cur.bakeMinutes} min${cur.extraMinutes ? ` <b>+ ${cur.extraMinutes} min added</b>` : ''}</div>
+      <div class="bigtimer">${timerDown(end, `bake-${o.id}-${cur.startedAt}-${end}`, `PULL ${cur.label} from ${o.name}!`)}</div>${progress(cur.startedAt, end)}
       ${bakeSteps ? `<ul class="steps">${bakeSteps}</ul>` : ''}
+      <div class="extend"><span class="eyebrow">Needs more time?</span><div class="btnrow">
+        ${[1, 5, 10].map((m) => btn(`+${m} min`, 'extend', { oven: o.id, min: m }, '')).join('')}
+        <input type="number" id="ext-${o.id}" min="0.5" max="120" step="0.5" placeholder="min" inputmode="decimal" aria-label="Custom minutes to add">${btn('Add', 'extendInput', { oven: o.id }, '')}
+      </div></div>
       <div class="btnrow">${btn(`Unload → cooling`, 'unload', { oven: o.id }, now() >= end ? 'primary big' : 'big')}</div>
       ${next && next.temp !== cur.tempF ? `<div class="hint warn">After this load: change to <b>${next.temp}°F</b> for ${esc(B(next.batchId)?.label || '')}</div>` : ''}`;
   } else if (next) {
@@ -330,36 +341,75 @@ function ovenCard(o) {
 }
 
 // ---------- Cooling & Packing
+// Pans start cooling the moment they come out of the oven. Each oven load is a
+// group with its own cooling timer and its own post-bake checklist, because
+// some post-bake steps depend on how long those pans have been out.
+function coolGroupBlock(b, g, gi, firstPan) {
+  const r = b.recipe;
+  const end = g.outAt + r.coolMinutes * MIN;
+  const cooled = now() >= end;
+  const range = g.pans > 1 ? `Pans ${firstPan}–${firstPan + g.pans - 1}` : `Pan ${firstPan}`;
+  const checks = b.checks[`finish-${gi}`] || [];
+  const steps = r.finishSteps.map((s, i) => {
+    const done = !!checks[i];
+    let when = '';
+    if (s.minutes) {
+      const due = g.outAt + s.minutes * MIN;
+      when = `<span class="due muted">at ${s.minutes} min out</span>${done ? '' : ` ${timerDown(due, `finish-${b.id}-${gi}-${i}-${g.outAt}`, `${b.label}, ${range.toLowerCase()}: ${s.text}`)}`}`;
+    }
+    return `<li class="${done ? 'checked' : ''}"><button class="check" data-act="batch" data-id="${b.id}" data-action="toggleCheck" data-body="${attr({ stage: `finish-${gi}`, index: i })}">${done ? '✓' : ''}</button><span class="stext">${esc(s.text)}</span>${when}</li>`;
+  }).join('');
+  return `<div class="pangroup ${cooled ? 'cooled' : ''}">
+    <div class="ghead"><b>${range}</b> <span class="muted">out of ${esc(g.ovenId ? ovenName(g.ovenId) : 'the oven')} at ${fmtTime(g.outAt)} · out for</span> ${timerUp(g.outAt)}</div>
+    <div class="gcool"><span class="lbl-cooling">Cooling</span><span class="lbl-cooled">✓ Cooled</span> ${timerDown(end, `cool-${b.id}-${gi}-${g.outAt}`, `${b.label}, ${range.toLowerCase()} cooled`, 'good')}</div>
+    ${progress(g.outAt, end)}
+    ${steps ? `<ol class="steps">${steps}</ol>` : ''}
+  </div>`;
+}
+
+function uncheckedFinishSteps(b) {
+  return b.coolGroups.reduce((n, g, gi) => n + b.recipe.finishSteps.filter((s, i) => !(b.checks[`finish-${gi}`] || [])[i]).length, 0);
+}
+
 pages.cooling = () => {
   let html = '';
-  const cooling = inStage('cooling').sort((a, b) => a.t.coolStart - b.t.coolStart);
+  const cooling = App.state.batches
+    .filter((b) => !['packing', 'done'].includes(b.stage) && (b.coolGroups || []).length)
+    .sort((a, b) => a.coolGroups[0].outAt - b.coolGroups[0].outAt);
   const packing = inStage('packing').sort((a, b) => a.t.packStart - b.t.packStart);
 
-  html += section('Finishing & packing', packing.length ? `<div class="grid">${packing.map((b) => {
+  html += section('Cooling & post-bake prep', cooling.length ? `<div class="grid">${cooling.map((b) => {
+    const r = b.recipe;
+    let first = 1;
+    const groups = b.coolGroups.map((g, gi) => { const h = coolGroupBlock(b, g, gi, first); first += g.pans; return h; }).join('');
+    const allOut = b.stage === 'cooling';
+    const lastEnd = Math.max(...b.coolGroups.map((g) => g.outAt)) + r.coolMinutes * MIN;
+    const ready = allOut && now() >= lastEnd;
+    const unchecked = uncheckedFinishSteps(b);
+    const warn = [!ready && allOut ? "Not all pans have finished cooling." : '', unchecked ? `${unchecked} post-bake step${unchecked > 1 ? 's are' : ' is'} not checked off.` : ''].filter(Boolean).join(' ');
+    return `<div class="card ${ready ? 'ready' : 'active'}" style="--c:${esc(r.color)}">${title(b)}
+      <div class="meta">${esc(b.coolingArea || b.location)} · ${b.pansBaked} of ${pansText(b)} pans out</div>
+      ${groups}
+      ${allOut
+        ? `<div class="btnrow">${batchBtn(b, 'finishCooling', 'All cooled → Pack', {}, ready && !unchecked ? 'primary big' : 'big', warn ? `${warn} Move ${b.label} to packing anyway?` : '')}</div>`
+        : `<div class="hint">${remainingPans(b) + b.pansInOven} more pan${remainingPans(b) + b.pansInOven > 1 ? 's' : ''} still baking or on the rack — they'll show up here when unloaded.</div>`}
+    </div>`;
+  }).join('')}</div>` : empty('Nothing cooling.'));
+
+  html += section('Packing', packing.length ? `<div class="grid">${packing.map((b) => {
     const r = b.recipe;
     return `<div class="card active" style="--c:${esc(r.color)}">${title(b)}
       <div class="meta">${esc(b.location)} · ${b.pans} pans · ≈${r.yieldPerBatch} cookies · ${timerUp(b.t.packStart)} elapsed (planned ${r.packMinutes} min)</div>
-      ${r.finishSteps.length ? `<h4>Post-bake prep</h4>${stepList(b, 'finish', r.finishSteps)}` : ''}
-      <h4>Packing</h4>${stepList(b, 'pack', r.packSteps) || '<div class="muted">No packing steps</div>'}
+      ${stepList(b, 'pack', r.packSteps) || '<div class="muted">No packing steps</div>'}
       ${r.notes ? `<div class="hint">${esc(r.notes)}</div>` : ''}
       <div class="btnrow">${batchBtn(b, 'finishPacking', 'Packed ✓ Done', {}, 'primary big')}</div></div>`;
   }).join('')}</div>` : empty('Nothing being packed.'));
 
-  html += section('Cooling', cooling.length ? `<div class="grid">${cooling.map((b) => {
-    const r = b.recipe;
-    const end = b.t.coolStart + r.coolMinutes * MIN;
-    const ready = now() >= end;
-    return `<div class="card ${ready ? 'ready' : 'active'}" style="--c:${esc(r.color)}">${title(b)}
-      <div class="meta">${esc(b.location)} · ${b.pans} pans</div>
-      <div class="bigtimer">${timerDown(end, `cool-${b.id}`, `${b.label} has cooled — ready to finish & pack`)}</div>${progress(b.t.coolStart, end)}
-      ${r.finishSteps.length ? `<div class="hint">Then: ${r.finishSteps.map((s) => esc(s.text)).join(' → ')}</div>` : ''}
-      <div class="btnrow">${batchBtn(b, 'finishCooling', 'Cooled → Finish & pack', {}, ready ? 'primary big' : '', ready ? '' : `${b.label} hasn't finished cooling. Start packing anyway?`)}</div></div>`;
-  }).join('')}</div>` : empty('Nothing cooling.'));
-
-  const coming = inStage('baking', 'staged', 'prepping').sort((a, b) => P(a.id).bakeEnd - P(b.id).bakeEnd);
-  html += section('Coming out of the ovens', coming.length ? table(['Batch', 'Pans out', 'Area', 'All out'], coming.map((b) => [
-    title(b), `${b.pansBaked} / ${pansText(b)}`, esc(b.coolingArea || '—'), `${fmtTime(P(b.id).bakeEnd)} (${relTime(P(b.id).bakeEnd)})`,
-  ])) : empty('Nothing in the ovens.'));
+  const coming = inStage('baking', 'staged', 'prepping').filter((b) => !b.coolGroups.length).sort((a, b) => P(a.id).bakeEnd - P(b.id).bakeEnd);
+  html += section('Coming out of the ovens', coming.length ? table(['Batch', 'Status', 'Area', 'First pans out'], coming.map((b) => {
+    const firstOut = Math.min(...P(b.id).loads.map((l) => l.end));
+    return [title(b), STAGE_LABEL[b.stage], esc(b.coolingArea || '—'), Number.isFinite(firstOut) ? `${fmtTime(firstOut)} (${relTime(firstOut)})` : '—'];
+  })) : empty('Nothing in the ovens.'));
 
   const done = inStage('done');
   if (done.length) {
@@ -424,7 +474,7 @@ function gantt(active) {
   const ovenRows = S().ovens.map((o) => {
     const os = App.state.ovens[o.id] || {};
     const loads = [...((App.plan.ovens[o.id] || {}).schedule || [])];
-    if (os.current) loads.unshift({ batchId: os.current.batchId, start: os.current.startedAt, end: os.current.startedAt + os.current.bakeMinutes * MIN, temp: os.current.tempF });
+    if (os.current) loads.unshift({ batchId: os.current.batchId, start: os.current.startedAt, end: loadEnd(os.current), temp: os.current.tempF });
     return `<div class="grow oven-row"><div class="glabel"><b>🔥 ${esc(o.name)}</b></div><div class="gtrack">${loads.map((l) => {
       const c = B(l.batchId)?.recipe.color || '#999';
       return (l.changeoverAt ? bar(l.changeoverAt, l.start, 'changeover', `→${l.temp}°`) : '') + bar(l.start, l.end, 'load', `${l.temp}°`, `background:${esc(c)}`);
@@ -465,7 +515,7 @@ const STEP_GROUPS = [
   ['chill', 'Chilling', [['chillMinutes', 'Chill time (min, 0 = no chill)'], ['chillNotes', 'Chill notes', 'text']], null],
   ['prep', 'Prep (panning)', [['prepMinutesPerPan', 'Prep minutes per pan']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
   ['bake', 'Baking', [['ovenTempF', 'Oven temp (°F)'], ['bakeMinutes', 'Bake time per load (min)']], 'bakeSteps', 'Bake reminders', 'minutes = alert at this many minutes into the bake'],
-  ['cool', 'Cooling & finishing', [['coolMinutes', 'Cooling time (min)']], 'finishSteps', 'Post-bake prep (glaze, icing…)', 'minutes = optional step timer'],
+  ['cool', 'Cooling & finishing', [['coolMinutes', 'Cooling time (min)']], 'finishSteps', 'Post-bake prep (glaze, icing…)', 'minutes = do this many minutes after the pans come out of the oven'],
   ['pack', 'Packing', [['packMinutes', 'Finishing + packing time (min)'], ['yieldPerBatch', 'Cookies per batch']], 'packSteps', 'Packing steps', 'minutes = optional step timer'],
 ];
 
@@ -553,6 +603,15 @@ const ACTIONS = {
   ovenTemp: (d) => api('POST', `/api/ovens/${d.oven}/temp`, { tempF: d.temp }),
   ovenTempInput: (d) => api('POST', `/api/ovens/${d.oven}/temp`, { tempF: $(`#mt-${d.oven}`).value }),
   ovenReady: (d) => api('POST', `/api/ovens/${d.oven}/ready`),
+  extend: (d) => api('POST', `/api/ovens/${d.oven}/extend`, { minutes: Number(d.min) }),
+  extendInput: (d) => {
+    const input = $(`#ext-${d.oven}`);
+    const minutes = Number(input.value);
+    if (!input.value || !(minutes > 0)) { toast('Enter how many minutes to add', 'error'); input.focus(); return; }
+    return api('POST', `/api/ovens/${d.oven}/extend`, { minutes }).then(() => { input.value = ''; });
+  },
+  dismissAlarm: (d) => dismissAlarm(d.key),
+  dismissAll: () => [...App.alarms.keys()].forEach(dismissAlarm),
   panStep: (d) => {
     const input = document.getElementById(d.target);
     const cur = input.value === '' ? Number(d.est) - Number(d.delta) : Number(input.value);
@@ -646,13 +705,35 @@ function beep(times = 3) {
     o.start(t); o.stop(t + 0.3);
   }
 }
-function alertNow(msg) {
-  beep();
-  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-  toast(`🔔 ${msg}`, 'alert', 15000);
-  document.body.classList.add('flash');
-  setTimeout(() => document.body.classList.remove('flash'), 3000);
+// Alarms keep beeping until someone taps OK on this tablet, or until the thing
+// they're about goes away (e.g. pans unloaded, step checked off, time added).
+try { App.dismissed = new Set(JSON.parse(localStorage.getItem('cf-dismissed') || '[]')); } catch { /* private mode */ }
+function saveDismissed() {
+  try { localStorage.setItem('cf-dismissed', JSON.stringify([...App.dismissed].slice(-500))); } catch { /* ignore */ }
 }
+function ring() {
+  beep(3);
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+}
+function raiseAlarm(key, msg) {
+  if (App.alarms.has(key) || App.dismissed.has(key)) return;
+  App.alarms.set(key, { msg, at: now() });
+  renderAlarms();
+  ring();
+}
+function dismissAlarm(key) {
+  App.dismissed.add(key);
+  saveDismissed();
+  App.alarms.delete(key);
+  renderAlarms();
+}
+function renderAlarms() {
+  const list = [...App.alarms.entries()].sort((a, b) => a[1].at - b[1].at);
+  $('#alarms').innerHTML = list.map(([key, a]) => `<div class="alarm"><span class="amsg">🔔 ${esc(a.msg)}</span>${btn('OK', 'dismissAlarm', { key }, 'big')}</div>`).join('')
+    + (list.length > 1 ? `<div class="alarm-all">${btn(`Dismiss all ${list.length}`, 'dismissAll', {}, '')}</div>` : '');
+  document.body.classList.toggle('alarming', list.length > 0);
+}
+setInterval(() => { if (App.alarms.size) ring(); }, 2500);
 function toast(msg, kind = 'info', ms = 4000) {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
@@ -676,12 +757,14 @@ function tick() {
     const rem = el.dataset.end - t;
     el.textContent = (rem < 0 ? '+' : '') + fmtDur(rem);
     el.classList.toggle('over', rem <= 0);
-    const key = el.dataset.alert;
-    if (key && rem <= 0 && !App.fired.has(key)) {
-      App.fired.add(key);
-      if (rem > -20000) alertNow(el.dataset.msg); // don't replay stale alerts after a reload
-    }
+    if (el.dataset.alert && rem <= 0) raiseAlarm(el.dataset.alert, el.dataset.msg);
   }
+  // Drop alarms whose timer is no longer on screen: the condition was handled.
+  let changed = false;
+  for (const key of App.alarms.keys()) {
+    if (!document.querySelector(`[data-alert="${CSS.escape(key)}"]`)) { App.alarms.delete(key); changed = true; }
+  }
+  if (changed) renderAlarms();
   for (const el of document.querySelectorAll('[data-pstart]')) {
     const a = +el.dataset.pstart, b = +el.dataset.pend;
     const pct = Math.min(100, Math.max(0, ((t - a) / (b - a)) * 100));
