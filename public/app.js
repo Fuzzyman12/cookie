@@ -249,7 +249,8 @@ pages.chilling = () => {
 
 // ---------- Prep
 // #/prep shows every prep station; #/prep/2 shows only the 2nd (for a tablet at that table).
-// Each station can work on `capacity` batches side by side.
+// Each station can hold up to `capacity` batches (started by hand); the planner
+// still schedules one batch at a time per station.
 pages.prep = (arg) => {
   const all = S().prepStations; // [{ name, capacity }]
   const names = all.map((st) => st.name);
@@ -261,7 +262,7 @@ pages.prep = (arg) => {
   const queue = App.plan.prepQueue.map(B).filter((b) => b && b.stage !== 'prepping');
   const at = (st) => prepping.filter((b) => b.location === st.name);
   const free = shown.filter((st) => at(st).length < st.capacity);
-  const freeSpots = shown.reduce((n, st) => n + Math.max(0, st.capacity - at(st).length), 0);
+  const idleStations = shown.filter((st) => !at(st).length).length; // what the plan counts on
   const startBtns = (b, cls) => (free.length
     ? free.map((st) => batchBtn(b, 'startPrep', multi ? `Start at ${esc(st.name)}` : 'Start prepping', { station: st.name }, cls)).join('')
     : `<span class="muted">${only ? `${esc(only.name)} is full` : 'All prep stations are full'}</span>`);
@@ -316,7 +317,7 @@ pages.prep = (arg) => {
     // Other dough that's ready: useful when the next one is still chilling,
     // or when more than one prep station is free.
     const alsoReady = queue.slice(1).filter(readyForPrep);
-    if ((!ready || freeSpots > 1) && alsoReady.length) {
+    if ((!ready || idleStations > 1) && alsoReady.length) {
       html += section(ready ? 'Also ready to prep' : 'Ready now (out of planned order)', `<div class="grid">${alsoReady.map((b) => `<div class="card">${title(b)}${recipeChips(b.recipe, b)}<div class="meta">In ${esc(b.location)}</div><div class="btnrow">${startBtns(b, '')}</div></div>`).join('')}</div>`);
     }
   } else if (!prepping.length) {
@@ -795,7 +796,7 @@ pages.settings = () => {
       <label class="field wide">Kitchen name<input name="kitchenName" value="${esc(s.kitchenName)}"></label>
       ${list('mixStations', 'Mix stations (one per line)', s.mixStations)}
       ${list('chillLocations', 'Chill locations', s.chillLocations)}
-      <div class="field wide">Prep stations <span class="small">— name, and how many batches it can prep side by side</span>
+      <div class="field wide">Prep stations <span class="small">— name, and how many batches staff can have going there at once (the planner still schedules one at a time)</span>
         <div class="steplist" id="prep-rows">${s.prepStations.map(prepRow).join('')}</div>
         <div>${btn('+ Add prep station', 'addPrepRow', {}, 'tiny')}</div>
       </div>

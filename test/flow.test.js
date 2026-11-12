@@ -178,12 +178,16 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     const trio = state.batches.filter((x) => x.recipeId === 'r-snickerdoodle' && x.stage === 'queued').map((x) => x.id);
     for (const tid of trio) { await act(tid, 'startMix'); await act(tid, 'finishMix'); }
     ({ plan } = await get());
-    const starts = trio.map((tid) => plan.batches[tid].prepStart).sort((a, b) => a - b);
-    assert.strictEqual(starts[0], starts[1], 'two batches prep side by side at one station');
-    assert.ok(starts[2] > starts[1], 'third waits for a free spot');
+    const planned = trio.map((tid) => plan.batches[tid]).sort((a, b) => a.prepStart - b.prepStart);
+    assert.ok(planned[1].prepStart >= planned[0].prepEnd, 'planner does one batch at a time even with capacity 2');
+    assert.ok(planned[2].prepStart >= planned[1].prepEnd);
+    // ...but staff can still start a second batch there by hand
     await act(trio[0], 'startPrep', { station: 'Big Table' });
     await act(trio[1], 'startPrep');
     await assert.rejects(act(trio[2], 'startPrep'), /All prep stations are full/);
+    ({ plan } = await get());
+    const busyUntil = Math.max(plan.batches[trio[0]].prepEnd, plan.batches[trio[1]].prepEnd);
+    assert.ok(plan.batches[trio[2]].prepStart >= busyUntil, 'next batch waits until both in-progress batches are done');
     await assert.rejects(act(trio[2], 'startPrep', { station: 'Big Table' }), /Big Table is full \(2 batches at once\)/);
     ({ state } = await get());
     assert.deepStrictEqual(trio.slice(0, 2).map((tid) => state.batches.find((x) => x.id === tid).location), ['Big Table', 'Big Table']);

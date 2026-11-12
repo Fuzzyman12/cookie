@@ -103,8 +103,10 @@ On every change (and every 20 s) the server simulates the rest of the day:
 
 - **Mix stations** – how many batches can mix at once.
 - **Chill** – timed, doesn't hold up a station.
-- **Prep** – each prep station (Settings → Prep stations) works on up to its
-  *batches at once* side by side, each taking `prep minutes per pan × pans`.
+- **Prep** – the plan uses one batch at a time at each prep station
+  (Settings → Prep stations), each taking `prep minutes per pan × pans`. A
+  station's *batches at once* only lets staff start extra batches there by
+  hand. The plan then waits until all of them are done.
 - **Ovens** – each holds `pans per load`. Changing temperature costs time
   (preheat from cold, minutes per 25°F up or down), so the planner groups loads
   by temperature and tells the baker when to change an oven and to what.
