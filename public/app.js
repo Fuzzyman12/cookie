@@ -74,8 +74,19 @@ const timerUp = (start) => `<span class="timer up" data-start="${start}">${fmtDu
 const progress = (start, end) => `<div class="progress"><div data-pstart="${start}" data-pend="${end}"></div></div>`;
 const relTime = (t) => `<span class="rel" data-at="${t}">${rel(t)}</span>`;
 
+// Bake days: batches for a later day (mixed ahead for an overnight chill, or just queued early).
+const isLater = (b) => !!b.bakeDate && !!App.plan?.today && b.bakeDate > App.plan.today && ['queued', 'mixing', 'chilling'].includes(b.stage);
+function dayLabel(date) {
+  if (!date || !App.plan?.today || date <= App.plan.today) return 'Today';
+  const [y, m, d] = App.plan.today.split('-').map(Number);
+  const tmw = new Date(y, m - 1, d + 1);
+  const tomorrow = `${tmw.getFullYear()}-${pad(tmw.getMonth() + 1)}-${pad(tmw.getDate())}`;
+  if (date === tomorrow) return 'Tomorrow';
+  const [yy, mm, dd] = date.split('-').map(Number);
+  return new Date(yy, mm - 1, dd).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
 function title(b, extra = '') {
-  return `<div class="btitle" style="--c:${esc(b.recipe.color)}"><span class="swatch"></span><span class="bname">${esc(b.label)}</span>${b.rush ? '<span class="badge rush">RUSH</span>' : ''}${extra}</div>`;
+  return `<div class="btitle" style="--c:${esc(b.recipe.color)}"><span class="swatch"></span><span class="bname">${esc(b.label)}</span>${b.rush ? '<span class="badge rush">RUSH</span>' : ''}${isLater(b) ? `<span class="badge later">🌙 ${esc(dayLabel(b.bakeDate).toUpperCase())}</span>` : ''}${extra}</div>`;
 }
 const chips = (items) => `<div class="chips">${items.filter(Boolean).map((c) => `<span class="chip">${c}</span>`).join('')}</div>`;
 const recipeChips = (r, b) => chips([
@@ -118,7 +129,7 @@ function stationCount(key) {
   const c = {
     mixing: inStage('queued', 'mixing').length,
     chilling: inStage('chilling', 'pan_chilling').length,
-    prep: inStage('ready_prep', 'prepping').length + inStage('chilling').filter(chillDone).length,
+    prep: inStage('ready_prep', 'prepping').length + inStage('chilling').filter((b) => chillDone(b) && !isLater(b)).length,
     baking: inStage('staged', 'baking').length + inStage('pan_chilling').filter(panChillDone).length,
     cooling: inStage('cooling', 'packing').length,
   }[key];
@@ -132,7 +143,10 @@ pages.mixing = (arg) => {
   const only = arg ? all[Number(arg) - 1] : null;
   const shown = only ? [only] : all;
   const mixing = inStage('mixing');
-  const queue = App.plan.mixQueue.map(B).filter(Boolean);
+  const today = App.plan.mixQueue.map(B).filter(Boolean);
+  const ahead = (App.plan.mixAheadQueue || []).map(B).filter(Boolean); // mix today, bake tomorrow
+  // Today's work comes first; tomorrow's day-before batches fill in after.
+  const queue = today.length ? today : ahead;
   const busy = new Set(mixing.map((b) => b.location));
   const free = shown.filter((x) => !busy.has(x));
   let html = '';
@@ -151,7 +165,7 @@ pages.mixing = (arg) => {
       <div class="meta">Mixing ${timerUp(b.t.mixStart)} · planned ${r.mixMinutes} min ${progress(b.t.mixStart, target)}</div>
       <details ${only ? 'open' : ''}><summary>Ingredients (${r.ingredients.length})</summary><ul class="ingredients">${r.ingredients.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></details>
       ${stepList(b, 'mix', r.mixSteps)}
-      ${r.chillMinutes > 0 ? `<div class="hint">❄️ Needs ${r.chillMinutes} min chill. ${esc(r.chillNotes)}</div>` : '<div class="hint">No chill needed — goes straight to Cookie Prep.</div>'}
+      ${r.chillMinutes > 0 ? `<div class="hint">❄️ Needs ${r.chillMinutes} min chill${isLater(b) ? ` — overnight, bakes ${esc(dayLabel(b.bakeDate).toLowerCase())}` : ''}. ${esc(r.chillNotes)}</div>` : '<div class="hint">No chill needed — goes straight to Cookie Prep.</div>'}
       <div class="btnrow">${done}</div></div>`;
   };
   const stations = section(only ? 'This station' : 'Mix stations', `<div class="grid">${shown.map(stationCard).join('')}</div>`);
@@ -168,8 +182,9 @@ pages.mixing = (arg) => {
       ? free.map((st) => batchBtn(b, 'startMix', `Start at ${esc(st)}`, { station: st }, notYet ? 'big' : 'primary big')).join('')
       : `<div class="muted">${only ? `${esc(only)} is busy — finish the current batch first.` : `All mix stations busy — next one frees up ${relTime(P(b.id).mixStart)}.`}</div>`;
     html += `<div class="card next" style="--c:${esc(r.color)}">
-      <div class="eyebrow">Up next to mix</div>${title(b)}${recipeChips(r, b)}
-      ${notYet ? `<div class="hint warn">⏳ Not needed yet — planned to start at <b>${fmtTime(plannedStart)}</b> (${relTime(plannedStart)}) so the dough is ready when the ovens get to ${r.ovenTempF}°F. Starting early is fine, but the dough will wait.</div>` : ''}
+      <div class="eyebrow">Up next to mix${isLater(b) ? ` — for ${esc(dayLabel(b.bakeDate).toLowerCase())}` : ''}</div>${title(b)}${recipeChips(r, b)}
+      ${isLater(b) ? `<div class="hint">🌙 Mix today and chill overnight (${r.chillMinutes} min) — bakes ${esc(dayLabel(b.bakeDate).toLowerCase())}.</div>` : ''}
+      ${notYet && !isLater(b) ? `<div class="hint warn">⏳ Not needed yet — planned to start at <b>${fmtTime(plannedStart)}</b> (${relTime(plannedStart)}) so the dough is ready when the ovens get to ${r.ovenTempF}°F. Starting early is fine, but the dough will wait.</div>` : ''}
       ${why(b)}
       <h4>Gather ingredients</h4>
       <ul class="ingredients">${r.ingredients.map((i) => `<li>${esc(i)}</li>`).join('') || '<li class="muted">No ingredients listed</li>'}</ul>
@@ -180,10 +195,20 @@ pages.mixing = (arg) => {
 
   if (!only) html += stations;
 
-  html += section('Mixing queue', queue.length > 1 ? table(['#', 'Batch', 'Planned start', 'Chill', 'Oven'], queue.slice(1).map((b, i) => [
+  if (today.length) html += section('Mixing queue', queue.length > 1 ? table(['#', 'Batch', 'Planned start', 'Chill', 'Oven'], queue.slice(1).map((b, i) => [
     i + 2, title(b), `${fmtTime(P(b.id).mixStart)} <span class="muted">(${relTime(P(b.id).mixStart)})${all.length > 1 && P(b.id).mixStation ? ` · ${esc(P(b.id).mixStation)}` : ''}</span>`,
     b.recipe.chillMinutes ? `${b.recipe.chillMinutes}m` : '—', `${b.recipe.ovenTempF}°F`,
   ])) : empty('No more batches waiting.'));
+
+  // "Mix the day before" batches for tomorrow, when today's queue isn't empty.
+  const aheadList = today.length ? ahead : ahead.slice(1);
+  if (aheadList.length) {
+    html += section('🌙 Mix today, bake tomorrow', `<p class="muted small">Long-chill doughs for tomorrow. Mix them when a station is free — they chill overnight and join tomorrow's plan ready for prep.</p>
+      <div class="grid">${aheadList.map((b) => `<div class="card" style="--c:${esc(b.recipe.color)}">${title(b)}${recipeChips(b.recipe, b)}
+        <details><summary>Ingredients (${b.recipe.ingredients.length})</summary><ul class="ingredients">${b.recipe.ingredients.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></details>
+        <div class="meta">Planned ${fmtTime(P(b.id).mixStart)} (${relTime(P(b.id).mixStart)})</div>
+        <div class="btnrow">${free.length ? free.map((st) => batchBtn(b, 'startMix', `Start at ${esc(st)}`, { station: st }, '')).join('') : '<span class="muted">No free station right now</span>'}</div></div>`).join('')}</div>`);
+  }
   return html;
 };
 
@@ -231,6 +256,16 @@ pages.chilling = () => {
     }
     const end = b.t.chillStart + r.chillMinutes * MIN;
     const ready = now() >= end;
+    if (isLater(b)) {
+      // Overnight dough for a later bake day: no alarm, stays in the chiller.
+      return `<div class="card idle" style="--c:${esc(r.color)}"><div class="eyebrow">🌙 Overnight · bakes ${esc(dayLabel(b.bakeDate).toLowerCase())}</div>${title(b)}
+        <div class="bigtimer">${ready ? '✓ Chilled' : timerDown(end, '', '', 'good')}</div>
+        ${progress(b.t.chillStart, end)}
+        <div class="meta">In since ${fmtTime(b.t.chillStart)} · ${r.chillMinutes} min chill · keep cold until ${esc(dayLabel(b.bakeDate).toLowerCase())}</div>
+        ${r.chillNotes ? `<div class="hint">${esc(r.chillNotes)}</div>` : ''}
+        <div class="btnrow">${batchBtn(b, 'setBakeDay', 'Bake it today instead', { bakeDay: 'today' }, 'tiny', `Move ${b.label} into today's plan?`)}</div>
+      </div>`;
+    }
     return `<div class="card ${ready ? 'ready' : 'active'}" style="--c:${esc(r.color)}">${title(b)}
       <div class="bigtimer">${timerDown(end, `chill-${b.id}`, `${b.label} is chilled — take it to Cookie Prep`)}</div>
       ${progress(b.t.chillStart, end)}
@@ -242,7 +277,7 @@ pages.chilling = () => {
 
   // Dough coming from Mixing, and panned dough coming from Cookie Prep.
   const incoming = [
-    ...[...inStage('mixing'), ...App.plan.mixQueue.map(B).filter(Boolean)].filter((b) => b.recipe.chillMinutes > 0)
+    ...[...inStage('mixing'), ...App.plan.mixQueue.map(B).filter(Boolean), ...(App.plan.mixAheadQueue || []).map(B).filter(Boolean)].filter((b) => b.recipe.chillMinutes > 0)
       .map((b) => ({ b, what: 'Dough (bowl)', at: P(b.id).mixEnd, mins: b.recipe.chillMinutes })),
     ...App.plan.prepQueue.map(B).filter((b) => b && b.recipe.panChillMinutes > 0)
       .map((b) => ({ b, what: `Pans (~${b.pans})`, at: P(b.id).prepEnd, mins: b.recipe.panChillMinutes })),
@@ -628,33 +663,45 @@ pages.cooling = () => {
 
 // ---------- Overview
 pages.overview = () => {
-  const active = App.state.batches.filter((b) => b.stage !== 'done');
+  const later = App.state.batches.filter(isLater);
+  const active = App.state.batches.filter((b) => b.stage !== 'done' && !isLater(b));
   const recipes = App.state.recipes;
   let html = `<div class="tiles stats">
-    <div class="stat"><b>${inStage('queued').length}</b><span>queued</span></div>
-    <div class="stat"><b>${active.length - inStage('queued').length}</b><span>in progress</span></div>
+    <div class="stat"><b>${active.filter((b) => b.stage === 'queued').length}</b><span>queued</span></div>
+    <div class="stat"><b>${active.filter((b) => b.stage !== 'queued').length}</b><span>in progress</span></div>
     <div class="stat"><b>${inStage('done').length}</b><span>done</span></div>
     <div class="stat"><b>${active.length ? fmtTime(App.plan.finishAt) : '—'}</b><span>projected finish</span></div>
     <div class="stat"><b>${App.plan.changeovers}</b><span>oven temp changes</span></div>
+    <div class="stat"><b>${later.length}</b><span>🌙 for later days</span></div>
   </div>`;
 
   html += section('Add batches', recipes.length ? `<div class="addform">
     <select id="add-recipe">${recipes.map((r) => `<option value="${esc(r.id)}">${esc(r.name)} (${r.ovenTempF}°F${r.chillMinutes ? `, chill ${r.chillMinutes}m` : ''})</option>`).join('')}</select>
     <input id="add-count" type="number" min="1" max="50" value="1" inputmode="numeric" aria-label="Number of batches">
+    <select id="add-day" aria-label="Bake day"><option value="today">Bake today</option><option value="tomorrow">Bake tomorrow</option></select>
     <label class="inline"><input id="add-rush" type="checkbox"> Rush</label>
     ${btn('Add to queue', 'addBatches', {}, 'primary')}
-  </div><p class="muted">The planner re-sorts the queue automatically: long chills start first, same oven temps are grouped, and ovens are kept busy.</p>` : empty('Create a recipe first on the <a href="#/recipes">Recipes</a> page.'));
+  </div><div id="add-hint" class="muted small"></div>
+  <p class="muted">The planner re-sorts the queue automatically: long chills start first, same oven temps are grouped, and ovens are kept busy. Recipes marked <b>Mix the day before</b> default to baking tomorrow: they're mixed today, chill overnight, and join tomorrow's plan.</p>` : empty('Create a recipe first on the <a href="#/recipes">Recipes</a> page.'));
 
   html += section('Shares', sharesTable(true), ` <a class="btn tiny" href="#/report">🖨 End of day report</a>`);
   html += section('Timeline', active.length ? gantt(active) : empty('No active batches.'));
+  if (later.length) {
+    html += section('🌙 Tomorrow and later', table(['Batch', 'Bake day', 'Status', 'Where', ''], later.sort((a, b) => (a.bakeDate < b.bakeDate ? -1 : 1)).map((b) => [
+      title(b), esc(dayLabel(b.bakeDate)),
+      b.stage === 'queued' ? (b.recipe.mixDayBefore ? 'Mix today (overnight chill)' : 'Waiting for its day') : b.stage === 'mixing' ? 'Mixing now' : `Chilling${chillDone(b) ? ' ✓' : ''}`,
+      esc(b.location),
+      `${btn('Bake today', 'batch', { id: b.id, action: 'setBakeDay', body: { bakeDay: 'today' }, confirm: `Move ${b.label} into today's plan?` }, 'tiny')} ${btn('Delete', 'deleteBatch', { id: b.id }, 'tiny danger')}`,
+    ])));
+  }
 
-  const all = [...App.state.batches].sort((a, b) => STAGES.indexOf(b.stage) - STAGES.indexOf(a.stage) || (P(a.id).mixStart ?? 0) - (P(b.id).mixStart ?? 0));
+  const all = App.state.batches.filter((b) => !isLater(b)).sort((a, b) => STAGES.indexOf(b.stage) - STAGES.indexOf(a.stage) || (P(a.id).mixStart ?? 0) - (P(b.id).mixStart ?? 0));
   html += section('All batches', all.length ? table(['Batch', 'Stage', 'Where', 'Done by', ''], all.map((b) => [
     title(b),
     `<select class="stage-select" data-id="${b.id}">${STAGES.map((s) => `<option value="${s}" ${s === b.stage ? 'selected' : ''}>${STAGE_LABEL[s]}</option>`).join('')}</select>`,
     esc(b.location),
     b.stage === 'done' ? `✓ ${fmtTime(b.t.done)}${b.packed ? ` <span class="muted">· ${b.packed.containers}×${b.packed.perContainer} = ${b.packed.cookies}</span>` : ''}` : fmtTime(P(b.id).doneAt),
-    `${btn(b.rush ? 'Un-rush' : 'Rush', 'batch', { id: b.id, action: 'setRush', body: { rush: !b.rush } }, 'tiny')} ${btn('Delete', 'deleteBatch', { id: b.id }, 'tiny danger')}`,
+    `${btn(b.rush ? 'Un-rush' : 'Rush', 'batch', { id: b.id, action: 'setRush', body: { rush: !b.rush } }, 'tiny')}${['queued', 'mixing', 'chilling'].includes(b.stage) ? ` ${btn('→ Tomorrow', 'batch', { id: b.id, action: 'setBakeDay', body: { bakeDay: 'tomorrow' } }, 'tiny')}` : ''} ${btn('Delete', 'deleteBatch', { id: b.id }, 'tiny danger')}`,
   ])) + `<div class="btnrow">${btn('Clear finished batches', 'clearDone', {}, '')}</div>` : empty('No batches yet.'));
   return html;
 };
@@ -779,7 +826,7 @@ pages.report = () => {
       ${table(['Batch', 'Pans', 'Containers', 'Cookies', 'Mixed', 'Packed', 'Mix', 'Chill', 'Prep', 'Pan chill', 'Bake', 'Cool', 'Pack', 'Total'], batchRows)}` : '<p class="muted">No batches packed yet.</p>'}
 
     <h2>Not finished</h2>
-    ${unfinished.length ? table(['Batch', 'Stage', 'Where', 'Pans'], unfinished.map((b) => [esc(b.label), STAGE_LABEL[b.stage], esc(b.location), pansText(b)]))
+    ${unfinished.length ? table(['Batch', 'Stage', 'Where', 'Pans'], unfinished.map((b) => [esc(b.label), `${STAGE_LABEL[b.stage]}${isLater(b) ? ` — for ${esc(dayLabel(b.bakeDate).toLowerCase())}` : ''}`, esc(b.location), pansText(b)]))
       : '<p class="muted">Everything queued today was finished.</p>'}
   </div>`;
 };
@@ -800,7 +847,7 @@ pages.recipes = () => {
 
 const STEP_GROUPS = [
   ['mix', 'Mixing', [['mixMinutes', 'Mixing time (min)'], ['ingredients', 'Ingredients (one per line)', 'textarea']], 'mixSteps', 'Mixing steps', 'minutes = optional step timer'],
-  ['chill', 'Chilling', [['chillMinutes', 'Chill time (min, 0 = no chill)'], ['chillNotes', 'Chill notes', 'text']], null],
+  ['chill', 'Chilling', [['chillMinutes', 'Chill time (min, 0 = no chill)'], ['chillNotes', 'Chill notes', 'text'], ['mixDayBefore', 'Mix the day before (long or overnight chill) — new batches default to baking tomorrow', 'checkbox']], null],
   ['prep', 'Prep (panning)', [['prepMinutesPerPan', 'Prep minutes per pan'], ['panChillMinutes', 'Chill pans after prep (min, 0 = no chill)'], ['panChillNotes', 'Pan chill notes', 'text']], 'prepSteps', 'Prep steps', 'minutes = optional step timer'],
   ['bake', 'Baking', [['ovenTempF', 'Oven temp (°F)'], ['bakeMinutes', 'Bake time per load (min)']], 'bakeSteps', 'Bake reminders', 'minutes = alert at this many minutes into the bake'],
   ['cool', 'Cooling & finishing', [['coolMinutes', 'Cooling time (min)']], 'finishSteps', 'Post-bake prep (glaze, icing…)', 'minutes = do this many minutes after the pans come out of the oven'],
@@ -817,7 +864,9 @@ pages.recipe = (id) => {
     ? { name: '', color: '#c8814a', yieldPerBatch: 48, perContainer: 6, mixMinutes: 15, ingredients: [], mixSteps: [], chillMinutes: 0, chillNotes: '', prepMinutesPerPan: S().prepMinutesPerPan, prepSteps: [], panChillMinutes: 0, panChillNotes: '', ovenTempF: 350, bakeMinutes: 10, bakeSteps: [], coolMinutes: 15, finishSteps: [], packMinutes: 10, packSteps: [], notes: '' }
     : App.state.recipes.find((x) => x.id === id);
   if (!r) return empty('Recipe not found. <a href="#/recipes">Back</a>');
-  const field = ([k, label, type]) => type === 'textarea'
+  const field = ([k, label, type]) => type === 'checkbox'
+    ? `<label class="field wide checkfield"><input name="${k}" type="checkbox" ${r[k] ? 'checked' : ''}> ${label}</label>`
+    : type === 'textarea'
     ? `<label class="field wide">${label}<textarea name="${k}" rows="5">${esc((r[k] || []).join('\n'))}</textarea></label>`
     : `<label class="field ${type === 'text' ? 'wide' : ''}">${label}<input name="${k}" type="${type || 'number'}" value="${esc(r[k] ?? '')}" ${type ? '' : 'min="0" inputmode="decimal"'}></label>`;
   return `<form id="recipe-form" class="recipe-form" data-id="${esc(id)}" onsubmit="return false">
@@ -891,7 +940,7 @@ async function api(method, url, body) {
 
 function formData(form) {
   const o = {};
-  for (const el of form.querySelectorAll('[name]')) o[el.name] = el.value;
+  for (const el of form.querySelectorAll('[name]')) o[el.name] = el.type === 'checkbox' ? el.checked : el.value;
   return o;
 }
 
@@ -938,7 +987,7 @@ const ACTIONS = {
     }
     return api('POST', `/api/batches/${d.id}/finishPrep`, { pans, to: d.to });
   },
-  addBatches: () => api('POST', '/api/batches', { recipeId: $('#add-recipe').value, count: $('#add-count').value, rush: $('#add-rush').checked }),
+  addBatches: () => api('POST', '/api/batches', { recipeId: $('#add-recipe').value, count: $('#add-count').value, rush: $('#add-rush').checked, bakeDay: $('#add-day').value }),
   quickAdd: (d) => api('POST', '/api/batches', { recipeId: d.id, count: 1 }),
   deleteBatch: (d) => confirm('Delete this batch?') && api('DELETE', `/api/batches/${d.id}`),
   clearDone: () => api('POST', '/api/batches/clear-done'),
@@ -984,7 +1033,18 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('input', (e) => { if (e.target.matches('[id^="cont-"], [id^="per-"]')) tick(); });
 
+function updateAddHint(fromRecipeChange) {
+  const sel = $('#add-recipe'), day = $('#add-day'), hint = $('#add-hint');
+  if (!sel || !day || !hint) return;
+  const r = App.state.recipes.find((x) => x.id === sel.value);
+  if (fromRecipeChange && r) day.value = r.mixDayBefore ? 'tomorrow' : 'today';
+  hint.innerHTML = r?.mixDayBefore && day.value === 'today'
+    ? `⚠️ ${esc(r.name)} is a <b>mix the day before</b> recipe (${r.chillMinutes} min chill). Baked today, its ovens can't start until the chill is done.`
+    : r?.mixDayBefore ? `🌙 ${esc(r.name)}: mix today, chill overnight, bake tomorrow.` : '';
+}
+
 document.addEventListener('change', async (e) => {
+  if (e.target.id === 'add-recipe' || e.target.id === 'add-day') updateAddHint(e.target.id === 'add-recipe');
   if (e.target.matches('.stage-select')) {
     const b = B(e.target.dataset.id);
     if (confirm(`Move ${b.label} to "${STAGE_LABEL[e.target.value]}"? (manager override)`)) {
@@ -1141,6 +1201,7 @@ function render() {
     for (const [id, left] of Object.entries(innerScroll)) { const el = document.getElementById(id); if (el) el.scrollLeft = left; }
   } else window.scrollTo(0, 0);
   if (focused) document.getElementById(focused)?.focus();
+  updateAddHint(fresh); // Overview: bake day follows the chosen recipe on first show
   tick();
 }
 window.addEventListener('hashchange', render);

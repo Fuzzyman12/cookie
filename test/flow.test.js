@@ -272,6 +272,30 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     for (const bid of [cc, oa, sd]) await call('DELETE', `/api/batches/${bid}`);
     await call('PUT', '/api/settings', { ovenPansPerLoad: 2 });
 
+    // Mix the day before (overnight chill)
+    const { recipe: night } = await call('POST', '/api/recipes', { name: 'Overnight Chunk', ovenTempF: 350, bakeMinutes: 12, chillMinutes: 720, mixDayBefore: true });
+    assert.strictEqual(night.mixDayBefore, true);
+    r = await call('POST', '/api/batches', { recipeId: night.id, count: 1 });
+    assert.match(r.message, /for tomorrow — mix today, chill overnight/);
+    ({ state, plan } = await get());
+    const nb = state.batches.at(-1);
+    assert.ok(nb.bakeDate > plan.today, 'defaults to tomorrow');
+    assert.ok(plan.mixAheadQueue.includes(nb.id) && !plan.mixQueue.includes(nb.id));
+    await act(nb.id, 'startMix');
+    await act(nb.id, 'finishMix', { to: 'Outdoor Chiller' });
+    ({ state, plan } = await get());
+    assert.strictEqual(state.batches.find((x) => x.id === nb.id).stage, 'chilling');
+    assert.ok(!plan.prepQueue.includes(nb.id), "overnight dough isn't in today's prep queue");
+    await assert.rejects(act(nb.id, 'setBakeDay', { bakeDay: '2000-01-01' }), /in the past/);
+    await act(nb.id, 'setBakeDay', { bakeDay: 'today' });
+    ({ state, plan } = await get());
+    assert.ok(plan.prepQueue.includes(nb.id), 'moved to today: joins the prep queue');
+    r = await call('POST', '/api/batches', { recipeId: night.id, count: 1, bakeDay: 'today' });
+    assert.doesNotMatch(r.message, /tomorrow/);
+    ({ state } = await get());
+    for (const x of state.batches.filter((x) => x.recipeId === night.id)) await call('DELETE', `/api/batches/${x.id}`);
+    await call('DELETE', `/api/recipes/${night.id}`);
+
     // Alarm dismissals are shared by all tablets
     await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2', 'cool-x-0-5'] });
     await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2'] });

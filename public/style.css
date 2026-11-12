@@ -324,3 +324,9 @@ body.alarming { animation: flash .8s infinite alternate; }
 .fill { margin-top: .6rem; padding: .6rem .8rem; background: #fff4e6; border-radius: 10px; border: 2px dashed #f0c999; }
 .nextload { font-size: 1.15rem; font-weight: 700; }
 .uprow > span:last-child { min-width: 0; }
+
+/* ---------- bake days */
+.badge.later { background: #3b4a7a; color: #fff; }
+.checkfield { flex-direction: row; align-items: center; gap: .6rem; color: var(--ink); }
+.checkfield input { width: 24px; height: 24px; min-height: auto; }
+#add-hint:not(:empty) { margin-top: .5rem; }

@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const { computePlan, changeoverMs } = require('./scheduler');
+const { computePlan, changeoverMs, localDate } = require('./scheduler');
 const { seedState, defaultSettings } = require('./seed');
 
 const PORT = Number(process.env.PORT) || 8080;
@@ -64,6 +64,19 @@ function normalize(s) {
     delete o.current;
   }
   return s;
+}
+
+// ---------------------------------------------------------------- bake days
+/** 'today' | 'tomorrow' | 'YYYY-MM-DD' → YYYY-MM-DD (server's local time zone). */
+function resolveBakeDate(v) {
+  const now = new Date();
+  if (v === undefined || v === null || v === '' || v === 'today') return localDate(now.getTime());
+  if (v === 'tomorrow') return localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12).getTime());
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) {
+    if (String(v) < localDate(now.getTime())) fail('Bake day is in the past');
+    return String(v);
+  }
+  fail('Bake day must be today, tomorrow or a date (YYYY-MM-DD)');
 }
 
 // ---------------------------------------------------------------- prep stations
@@ -190,6 +203,8 @@ function cleanRecipe(input, existing = {}) {
     mixSteps: steps(input.mixSteps),
     chillMinutes: n(input.chillMinutes, 0),
     chillNotes: String(input.chillNotes || ''),
+    // Long/overnight chill: mix on the day before the bake day.
+    mixDayBefore: input.mixDayBefore === true || input.mixDayBefore === 'true' || input.mixDayBefore === 'on',
     prepMinutesPerPan: n(input.prepMinutesPerPan, S().prepMinutesPerPan),
     prepSteps: steps(input.prepSteps),
     panChillMinutes: n(input.panChillMinutes, 0), // chill the panned dough before baking (0 = none)
@@ -307,6 +322,7 @@ const actions = {
       st = (prepStationWithRoom() || fail('All prep stations are full')).name;
     }
     if (b.stage === 'chilling') b.t.chillEnd = Date.now();
+    if (b.bakeDate && b.bakeDate > localDate()) b.bakeDate = localDate(); // pulled forward to today
     b.t.prepStart = Date.now();
     setStage(b, 'prepping', st);
   },
@@ -388,6 +404,11 @@ const actions = {
   },
   setRush(b, { rush }) {
     b.rush = !!rush;
+  },
+  setBakeDay(b, { bakeDay }) {
+    if (!['queued', 'mixing', 'chilling'].includes(b.stage)) fail(`${b.label} is already past chilling — it's being baked today`, 409);
+    b.bakeDate = resolveBakeDate(bakeDay);
+    return { message: `${b.label} now bakes ${b.bakeDate === localDate() ? 'today' : b.bakeDate === resolveBakeDate('tomorrow') ? 'tomorrow' : b.bakeDate}` };
   },
   // Manager override from the Overview page, for fixing mistakes.
   setStage(b, { stage }) {
@@ -493,6 +514,8 @@ app.post('/api/batches', route((req) => {
   const count = Math.min(50, Math.max(1, Math.floor(n(req.body.count, 1, 1))));
   const now = Date.now();
   const pans = estimatePans(state, r.id);
+  // Mix-the-day-before recipes default to baking tomorrow.
+  const bakeDate = resolveBakeDate(req.body.bakeDay ?? (r.mixDayBefore ? 'tomorrow' : 'today'));
   for (let k = 0; k < count; k++) {
     const number = (state.counters[r.id] = (state.counters[r.id] || 0) + 1);
     state.batches.push({
@@ -504,6 +527,7 @@ app.post('/api/batches', route((req) => {
       stage: 'queued',
       location: 'Queue',
       rush: !!req.body.rush,
+      bakeDate,
       createdAt: now + k,
       pans, // estimate until Cookie Prep enters the real count
       pansEstimated: true,
@@ -517,7 +541,8 @@ app.post('/api/batches', route((req) => {
       log: [{ stage: 'queued', at: now }],
     });
   }
-  return { message: `Queued ${count} × ${r.name}` };
+  const later = bakeDate > localDate();
+  return { message: `Queued ${count} × ${r.name}${later ? ` for ${bakeDate === resolveBakeDate('tomorrow') ? 'tomorrow' : bakeDate}${r.mixDayBefore ? ' — mix today, chill overnight' : ''}` : ''}` };
 }));
 app.post('/api/batches/clear-done', route(() => {
   const before = state.batches.length;

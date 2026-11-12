@@ -80,4 +80,32 @@ const ascending = (list) => list.every((t, i) => i === 0 || t >= list[i - 1]);
   assert.ok(order.indexOf('r-sugar') < order.indexOf('r-snickerdoodle'), 'long-chill sugar is mixed before no-chill snickerdoodles');
   console.log(`✓ seed recipes: no temperature drops, ${plan.changeovers} changes, finish in ${Math.round((plan.finishAt - now) / MIN)} min`);
 }
+// 4) Mix the day before: tomorrow's long-chill batch is mixed today (after today's
+//    work) and kept out of today's prep and ovens; tomorrow it's ready for prep.
+{
+  const { localDate } = require('../scheduler');
+  const today = localDate(now);
+  const d = new Date(now); const tomorrow = localDate(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 12).getTime());
+  const T = recipe('t350', 350, 10), O = recipe('overnight', 350, 12, { chillMinutes: 720, mixDayBefore: true }), N = recipe('notyet', 400, 9);
+  const todays = batch(T, 'queued', 2, { bakeDate: today });
+  const ahead = batch(O, 'queued', 2, { bakeDate: tomorrow });
+  const later = batch(N, 'queued', 2, { bakeDate: tomorrow }); // normal recipe for tomorrow: nothing today
+  const s = kitchen([todays, ahead, later]);
+  let plan = computePlan(s, now);
+  assert.deepStrictEqual(plan.mixQueue, [todays.id], "today's queue is only today's batch");
+  assert.deepStrictEqual(plan.mixAheadQueue, [ahead.id], 'overnight dough is mixed today');
+  assert.ok(plan.batches[ahead.id].mixStart >= now && plan.batches[ahead.id].forLater);
+  assert.ok(!plan.prepQueue.includes(ahead.id) && !plan.prepQueue.includes(later.id));
+  assert.ok(Object.values(plan.ovens).every((o) => o.schedule.every((l) => l.items.every((it) => it.batchId === todays.id))), "only today's batch is in the ovens");
+  assert.strictEqual(plan.batches[later.id], undefined, 'not planned at all today');
+  // Next morning: the dough chilled overnight and joins the plan ready for prep.
+  ahead.stage = 'chilling'; ahead.t = { mixStart: now, chillStart: now + 15 * MIN };
+  const nextMorning = now + 18 * 60 * MIN;
+  plan = computePlan(s, nextMorning);
+  assert.strictEqual(plan.today, tomorrow);
+  assert.ok(plan.prepQueue.includes(ahead.id), 'in tomorrow\'s prep queue');
+  assert.strictEqual(plan.batches[ahead.id].prepReady, nextMorning, 'chill already done: ready for prep right away');
+  assert.ok(plan.mixQueue.includes(later.id), "tomorrow's normal batch is in tomorrow's mixing queue");
+  console.log('✓ mix the day before: mixed today, out of today\'s ovens, ready for prep tomorrow');
+}
 console.log('✓ all scheduler tests passed');

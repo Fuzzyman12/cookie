@@ -56,25 +56,36 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    then the planner estimates pans from the last 5 counts prep entered for that
    recipe (or the *Pans per batch estimate* in Settings for a brand-new recipe).
    Estimated counts show with a `~`.
-5. **Chilling after prep** – for doughs that should chill on the pans before
+5. **Mixing the day before** – for doughs with long or overnight chills, tick
+   *Mix the day before* on the recipe. New batches of it default to **Bake
+   tomorrow** (Overview → Add batches has a bake-day choice for any recipe).
+   Today, they show on the Mixing tablet under *🌙 Mix today, bake tomorrow*,
+   planned after today's work. Once mixed they chill overnight on the Chilling
+   tablet, with no alarm and no push to prep. They're left out of today's prep,
+   ovens and timeline. When the date changes they join the plan as chilled dough
+   ready for prep, and go into the ovens following the usual low → high rules.
+   Overview lists *🌙 Tomorrow and later* batches, and any batch can be moved to
+   tomorrow or pulled into today. The day boundary uses the container's time
+   zone, so set `TZ` in `docker-compose.yml`.
+6. **Chilling after prep** – for doughs that should chill on the pans before
    baking, set *Chill pans after prep* on the recipe. Cookie Prep then sends
    the finished pans to the Fridge or Outdoor Chiller instead of the staging
    rack, and the Chilling tablet counts them down. The Baking tablet shows them
    on the staging rack with where they are and when they'll be ready, and the
    planner holds those loads until the chill is done. The baker can load them
    early with a confirmation.
-6. **Baking** – an oven holds up to *pans per oven* (Settings). If there's room
+7. **Baking** – an oven holds up to *pans per oven* (Settings). If there's room
    left and other dough at the same temperature is ready, the oven card shows
    **Fill with …** buttons, and the staging rack shows **Add to …**. Batches
    at a different temperature can't share. Each batch in the oven has its own
    timer, bake reminders, **+1 / +5 / +10 min** and custom add-time buttons,
    and **Unload** button, so it comes out on its own schedule.
-7. **Cooling** – pans go into cooling the moment they're unloaded, even if
+8. **Cooling** – pans go into cooling the moment they're unloaded, even if
    the rest of the batch is still baking. Each oven load gets its own group on
    the Cooling & Packing tablet ("Pans 1–2, out of Island Oven at 10:42") with
    its own cooling timer and its own post-bake checklist and timers. When every
    group has cooled, tap **All cooled → Pack**.
-8. **Packing & shares** – set the *Number of shares* in Settings and
+9. **Packing & shares** – set the *Number of shares* in Settings and
    *Cookies per container* on each recipe (0 = not part of shares). Each
    share gets one container of every cookie, so the goal is shares × cookies
    per container (e.g. 10 shares × 6 = 60 chocolate chip). When a batch is
@@ -85,7 +96,7 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    including batches in progress, and how many batches to add if you'll fall
    short. *Clear finished batches* keeps the packed counts. Settings →
    *Reset packed counts (new day)* zeroes them.
-9. **End of day report** – Overview → *🖨 End of day report* (or `/#/report`)
+10. **End of day report** – Overview → *🖨 End of day report* (or `/#/report`)
    opens a printable page. It shows totals (batches, cookies and containers
    packed, pans baked, first mix to last pack), each cookie's shares result
    (met or short by how many), every packed batch with how long each step
@@ -93,7 +104,7 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    what didn't get finished. Tap *Print report* or use the browser's print.
    It's built from the packed counts, so print it before *Reset packed counts
    (new day)*.
-10. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
+11. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
    post-bake or step timer finishes, the tablet shows a red alarm and beeps
    every few seconds until someone taps **OK**. An alarm also stops by itself
    when it's handled: pans unloaded, time added, step checked off, batch moved

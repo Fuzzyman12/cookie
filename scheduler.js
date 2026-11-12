@@ -47,6 +47,16 @@ function changeoverMs(fromTemp, toTemp, s) {
   return (Math.abs(diff) / 25) * per25 * MIN;
 }
 
+/** Local calendar date (YYYY-MM-DD) in the server's time zone (TZ). */
+function localDate(t = Date.now()) {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+/** Bakes on a later day and hasn't gone past chilling yet. */
+const isLater = (b, today) => !!b.bakeDate && b.bakeDate > today && ['queued', 'mixing', 'chilling'].includes(b.stage);
+/** Mixed today so it can chill overnight for a later bake day. */
+const isMixAhead = (b, today) => isLater(b, today) && !!b.recipe?.mixDayBefore;
+
 const argmin = (arr) => arr.reduce((best, v, i) => (v < arr[best] ? i : best), 0);
 
 // `release`: optional Map batchId → earliest time to start mixing it (used by
@@ -60,18 +70,25 @@ function simulate(ctx, order, release = null) {
   // ---------- Mixing
   const stationNames = s.mixStations.length ? s.mixStations : ['Mix Station'];
   const stations = stationNames.map((name) => ({ name, free: now }));
-  for (const b of active) {
+  // Batches mixed today for tomorrow use the mix stations, but nothing after that.
+  for (const b of ctx.ahead) P[b.id] = { loads: [], forLater: true };
+  for (const b of [...active, ...ctx.ahead]) {
     if (b.stage !== 'mixing') continue;
     const end = Math.max(now, (b.t.mixStart || now) + b.d.mix);
     const st = stations.find((x) => x.name === b.location) || stations[argmin(stations.map((x) => x.free))];
     st.free = Math.max(st.free, end);
     Object.assign(P[b.id], { mixStart: b.t.mixStart, mixEnd: end, mixStation: b.location });
   }
-  for (const b of order) {
+  for (const b of [...order, ...ctx.aheadQueued]) {
     const st = stations[argmin(stations.map((x) => x.free))];
     const start = Math.max(st.free, release?.get(b.id) ?? now);
     st.free = start + b.d.mix;
     Object.assign(P[b.id], { mixStart: start, mixEnd: st.free, mixStation: st.name });
+  }
+  for (const b of ctx.ahead) {
+    const p = P[b.id];
+    if (b.stage === 'chilling') p.chillEnd = (b.t.chillStart || now) + b.d.chill;
+    else p.chillEnd = p.mixEnd + b.d.chill;
   }
 
   // ---------- When is each batch's dough ready for prep?
@@ -340,11 +357,17 @@ function candidateOrders(queued, prevOrder) {
 
 function computePlan(state, now = Date.now(), prevOrder = []) {
   const s = state.settings;
-  const active = state.batches
+  const today = localDate(now);
+  const open = state.batches
     .filter((b) => b.stage !== 'done')
     .map((b) => ({ ...b, t: b.t || {}, d: durations(b.recipe, s) }));
+  // Today's work; batches for a later day are left out, except that
+  // "mix the day before" ones are mixed today (after today's queue).
+  const active = open.filter((b) => !isLater(b, today));
+  const ahead = open.filter((b) => isMixAhead(b, today));
+  const aheadQueued = ahead.filter((b) => b.stage === 'queued').sort((a, b) => (a.bakeDate < b.bakeDate ? -1 : a.bakeDate > b.bakeDate ? 1 : 0) || a.createdAt - b.createdAt);
   const queued = active.filter((b) => b.stage === 'queued');
-  const ctx = { now, s, active, ovenState: state.ovens || {} };
+  const ctx = { now, s, active, ahead, aheadQueued, ovenState: state.ovens || {} };
 
   const back = backwardPlan(queued, ctx);
   // Each candidate: a mixing order, optionally with just-in-time release times.
@@ -400,6 +423,9 @@ function computePlan(state, now = Date.now(), prevOrder = []) {
     computedAt: now,
     // Listed in planned mixing-time order (ties keep the search order).
     mixQueue: bestOrder.map((b, i) => [b.id, P[b.id].mixStart, i]).sort((x, y) => x[1] - y[1] || x[2] - y[2]).map((x) => x[0]),
+    // Mix today, chill overnight, bake on their bake day.
+    mixAheadQueue: aheadQueued.map((b) => b.id),
+    today,
     prepQueue,
     batches: P,
     ovens,
@@ -409,4 +435,4 @@ function computePlan(state, now = Date.now(), prevOrder = []) {
   };
 }
 
-module.exports = { computePlan, changeoverMs, durations, MIN };
+module.exports = { computePlan, changeoverMs, durations, localDate, MIN };
