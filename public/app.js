@@ -610,8 +610,8 @@ const ACTIONS = {
     if (!input.value || !(minutes > 0)) { toast('Enter how many minutes to add', 'error'); input.focus(); return; }
     return api('POST', `/api/ovens/${d.oven}/extend`, { minutes }).then(() => { input.value = ''; });
   },
-  dismissAlarm: (d) => dismissAlarm(d.key),
-  dismissAll: () => [...App.alarms.keys()].forEach(dismissAlarm),
+  dismissAlarm: (d) => dismissAlarms([d.key]),
+  dismissAll: () => dismissAlarms([...App.alarms.keys()]),
   panStep: (d) => {
     const input = document.getElementById(d.target);
     const cur = input.value === '' ? Number(d.est) - Number(d.delta) : Number(input.value);
@@ -707,10 +707,6 @@ function beep(times = 3) {
 }
 // Alarms keep beeping until someone taps OK on this tablet, or until the thing
 // they're about goes away (e.g. pans unloaded, step checked off, time added).
-try { App.dismissed = new Set(JSON.parse(localStorage.getItem('cf-dismissed') || '[]')); } catch { /* private mode */ }
-function saveDismissed() {
-  try { localStorage.setItem('cf-dismissed', JSON.stringify([...App.dismissed].slice(-500))); } catch { /* ignore */ }
-}
 function ring() {
   beep(3);
   if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
@@ -721,11 +717,18 @@ function raiseAlarm(key, msg) {
   renderAlarms();
   ring();
 }
-function dismissAlarm(key) {
-  App.dismissed.add(key);
-  saveDismissed();
-  App.alarms.delete(key);
+// Dismissals live on the server so OK on one tablet silences every tablet.
+async function dismissAlarms(keys) {
+  for (const k of keys) { App.dismissed.add(k); App.alarms.delete(k); } // silence here right away
   renderAlarms();
+  await api('POST', '/api/alarms/dismiss', { keys }).catch(() => {}); // toast shown on failure
+}
+/** Called on every server push: drop alarms another tablet dismissed. */
+function syncDismissed(list) {
+  App.dismissed = new Set([...(list || []), ...App.dismissed]);
+  let changed = false;
+  for (const k of App.alarms.keys()) if (App.dismissed.has(k)) { App.alarms.delete(k); changed = true; }
+  if (changed) renderAlarms();
 }
 function renderAlarms() {
   const list = [...App.alarms.entries()].sort((a, b) => a[1].at - b[1].at);
@@ -827,6 +830,7 @@ function connect() {
     App.state = m.state;
     App.plan = m.plan;
     App.offset = m.serverTime - Date.now();
+    syncDismissed(m.state.dismissedAlarms);
     render();
   };
   ws.onclose = () => { App.connected = false; updateConn(); setTimeout(connect, 2000); };

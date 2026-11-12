@@ -131,6 +131,13 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     ({ state } = await get());
     assert.strictEqual(state.batches.find((x) => x.id === id).stage, 'done');
 
+    // Alarm dismissals are shared by all tablets
+    await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2', 'cool-x-0-5'] });
+    await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2'] });
+    ({ state } = await get());
+    assert.deepStrictEqual(state.dismissedAlarms, ['bake-oven1-1-2', 'cool-x-0-5'], 'no duplicates');
+    await assert.rejects(call('POST', '/api/alarms/dismiss', { keys: [] }), /No alarm keys/);
+
     // Oven "it's at temp" confirmation
     await call('POST', '/api/ovens/oven2/temp', { tempF: 350 });
     ({ state } = await get());

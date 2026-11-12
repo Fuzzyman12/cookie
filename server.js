@@ -35,6 +35,7 @@ function normalize(s) {
   s.ovens ||= {};
   s.counters ||= {};
   s.panHistory ||= {};
+  s.dismissedAlarms ||= []; // alarm keys someone tapped OK on (shared by all tablets)
   for (const b of s.batches) {
     if (b.coolGroups) continue;
     b.coolGroups = ['cooling', 'packing', 'done'].includes(b.stage) ? [{ pans: b.pans, outAt: b.t?.coolStart || Date.now(), ovenId: null }] : [];
@@ -490,6 +491,18 @@ app.post('/api/ovens/:id/unload', route((req) => {
     setStage(b, 'cooling', b.coolingArea);
   }
   return { message: `Move ${c.pans} pan${c.pans > 1 ? 's' : ''} of ${b.label} to ${b.coolingArea}` };
+}));
+
+// Alarms: tapping OK on any tablet silences that alarm on every tablet.
+const DISMISSED_KEEP = 1000;
+app.post('/api/alarms/dismiss', route((req) => {
+  const keys = (Array.isArray(req.body.keys) ? req.body.keys : [])
+    .map((k) => String(k).slice(0, 200))
+    .filter(Boolean);
+  if (!keys.length) fail('No alarm keys given');
+  const set = new Set(state.dismissedAlarms);
+  for (const k of keys) set.add(k);
+  state.dismissedAlarms = [...set].slice(-DISMISSED_KEEP);
 }));
 
 // Settings
