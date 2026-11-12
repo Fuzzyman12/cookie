@@ -5,7 +5,8 @@ const defaultSettings = () => ({
   kitchenName: 'Cookie Kitchen',
   mixStations: ['Mix Station #1', 'Mix Station #2', 'Mix Station #3', 'Mix Station #4'],
   chillLocations: ['Fridge', 'Outdoor Chiller'],
-  prepStations: ['Cookie Prep'], // add more (e.g. 'Cookie Prep #2') to pan several batches at once
+  // Each prep station can work on `capacity` batches side by side.
+  prepStations: [{ name: 'Cookie Prep', capacity: 1 }],
   prepMinutesPerPan: 4, // default when a recipe doesn't say
   ovens: [
     { id: 'oven1', name: 'Island Oven' },

@@ -30,11 +30,12 @@ function loadState() {
 
 function normalize(s) {
   s.settings = { ...defaultSettings(), ...(s.settings || {}) };
-  // prepStations used to be a count of people; it's now a list of named stations.
+  // prepStations was a count of people, then a list of names; now [{ name, capacity }].
   if (!Array.isArray(s.settings.prepStations)) {
     const count = Math.max(1, Math.round(Number(s.settings.prepStations) || 1));
     s.settings.prepStations = count === 1 ? ['Cookie Prep'] : Array.from({ length: count }, (_, i) => `Cookie Prep #${i + 1}`);
   }
+  s.settings.prepStations = cleanPrepStations(s.settings.prepStations);
   s.recipes ||= [];
   s.batches ||= [];
   s.ovens ||= {};
@@ -55,6 +56,26 @@ function normalize(s) {
   }
   for (const o of s.settings.ovens) s.ovens[o.id] ||= { targetTempF: null, readyAt: 0, current: null };
   return s;
+}
+
+// ---------------------------------------------------------------- prep stations
+// Accepts [{ name, capacity }], plain names, or text with one name per line.
+function cleanPrepStations(v) {
+  const list = Array.isArray(v) ? v : String(v || '').split('\n');
+  const out = [];
+  for (const item of list) {
+    const name = String(typeof item === 'object' && item ? item.name : item || '').trim();
+    if (!name || out.some((x) => x.name === name)) continue;
+    const cap = Math.round(Number(typeof item === 'object' && item ? item.capacity : 1));
+    out.push({ name, capacity: Math.min(20, Math.max(1, Number.isFinite(cap) ? cap : 1)) });
+  }
+  return out;
+}
+/** First prep station with room for another batch (or null). */
+function prepStationWithRoom(excludeId) {
+  const used = {};
+  for (const x of state.batches) if (x.stage === 'prepping' && x.id !== excludeId) used[x.location] = (used[x.location] || 0) + 1;
+  return S().prepStations.find((st) => (used[st.name] || 0) < st.capacity) || null;
 }
 
 // ---------------------------------------------------------------- pan estimates
@@ -253,11 +274,15 @@ const actions = {
   },
   startPrep(b, { station }) {
     need(b, 'chilling', 'ready_prep');
-    const busy = new Set(state.batches.filter((x) => x.stage === 'prepping').map((x) => x.location));
-    const st = station || S().prepStations.find((x) => !busy.has(x));
-    if (!st) fail('No free prep station');
-    if (!S().prepStations.includes(st)) fail(`Unknown prep station: ${st}`);
-    if (busy.has(st)) fail(`${st} is already prepping something`, 409);
+    let st;
+    if (station) {
+      const def = S().prepStations.find((x) => x.name === station) || fail(`Unknown prep station: ${station}`);
+      const inUse = state.batches.filter((x) => x.stage === 'prepping' && x.location === def.name).length;
+      if (inUse >= def.capacity) fail(`${def.name} is full (${def.capacity} batch${def.capacity > 1 ? 'es' : ''} at once)`, 409);
+      st = def.name;
+    } else {
+      st = (prepStationWithRoom() || fail('All prep stations are full')).name;
+    }
     if (b.stage === 'chilling') b.t.chillEnd = Date.now();
     b.t.prepStart = Date.now();
     setStage(b, 'prepping', st);
@@ -352,8 +377,7 @@ const actions = {
       case 'chilling': b.t.chillStart = now; loc = S().chillLocations[0]; break;
       case 'ready_prep': loc = 'Cookie Prep'; break;
       case 'prepping': {
-        const busy = new Set(state.batches.filter((x) => x.stage === 'prepping' && x.id !== b.id).map((x) => x.location));
-        loc = S().prepStations.find((x) => !busy.has(x)) || S().prepStations[0];
+        loc = (prepStationWithRoom(b.id) || S().prepStations[0]).name;
         b.t.prepStart = now; break;
       }
       case 'pan_chilling': b.t.panChillStart = now; loc = S().chillLocations[0]; break;
@@ -548,7 +572,7 @@ app.put('/api/settings', route((req) => {
     chillLocations: strList(body.chillLocations ?? cur.chillLocations),
     coolingAreas: strList(body.coolingAreas ?? cur.coolingAreas),
     ovens: names.map((name, i) => ({ id: 'oven' + (i + 1), name })),
-    prepStations: strList(body.prepStations ?? cur.prepStations),
+    prepStations: cleanPrepStations(body.prepStations ?? cur.prepStations),
     prepMinutesPerPan: n(body.prepMinutesPerPan, cur.prepMinutesPerPan),
     ovenPansPerLoad: Math.round(n(body.ovenPansPerLoad, cur.ovenPansPerLoad, 1)),
     defaultPansPerBatch: Math.round(n(body.defaultPansPerBatch, cur.defaultPansPerBatch, 1)),

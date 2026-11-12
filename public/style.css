@@ -270,3 +270,9 @@ body.alarming { animation: flash .8s infinite alternate; }
 .stationpick a.chip { text-decoration: none; color: var(--ink); padding: .45rem .9rem; font-weight: 600; border: 2px solid transparent; }
 .stationpick a.chip.on { border-color: var(--primary); background: #fff; }
 .prepgrid { margin-bottom: 1rem; }
+
+/* ---------- prep stations with several batches */
+.pstation { margin-bottom: 1rem; }
+.pstation h3 { font-size: 1.1rem; }
+.prow .ps-name { flex: 1; }
+.prow .ps-cap { width: 80px; }

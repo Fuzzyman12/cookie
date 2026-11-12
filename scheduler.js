@@ -94,13 +94,16 @@ function simulate(ctx, order) {
   [...notQueued, ...order].forEach((b, i) => seq.set(b.id, i));
 
   // ---------- Prep
-  const prepNames = Array.isArray(s.prepStations) && s.prepStations.length ? s.prepStations : ['Cookie Prep'];
+  // One slot per batch a station can hold at once (a station with capacity 2 = 2 slots).
+  const stationsDef = Array.isArray(s.prepStations) && s.prepStations.length ? s.prepStations : [{ name: 'Cookie Prep', capacity: 1 }];
+  const prepNames = stationsDef.flatMap((st) => Array(Math.max(1, st.capacity || 1)).fill(st.name ?? st));
   const prepSlots = prepNames.map(() => now);
   for (const b of active) {
     if (b.stage !== 'prepping') continue;
     const end = Math.max(now, (b.t.prepStart || now) + b.d.prepPerPan * b.pans);
-    let k = prepNames.indexOf(b.location);
-    if (k < 0) k = argmin(prepSlots);
+    // Earliest-free slot at the batch's own station (falls back to any slot).
+    const own = prepNames.map((nm, i) => (nm === b.location ? i : -1)).filter((i) => i >= 0);
+    let k = own.length ? own.reduce((best, i) => (prepSlots[i] < prepSlots[best] ? i : best), own[0]) : argmin(prepSlots);
     prepSlots[k] = Math.max(prepSlots[k], end);
     Object.assign(P[b.id], { prepStart: b.t.prepStart, prepEnd: end, prepStation: b.location });
   }

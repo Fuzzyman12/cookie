@@ -230,30 +230,34 @@ pages.chilling = () => {
 
 // ---------- Prep
 // #/prep shows every prep station; #/prep/2 shows only the 2nd (for a tablet at that table).
+// Each station can work on `capacity` batches side by side.
 pages.prep = (arg) => {
-  const all = S().prepStations;
+  const all = S().prepStations; // [{ name, capacity }]
+  const names = all.map((st) => st.name);
   const only = arg ? all[Number(arg) - 1] : null;
   const shown = only ? [only] : all;
   const multi = all.length > 1;
+  const blocks = multi || all.some((st) => st.capacity > 1); // show a block per station
   const prepping = inStage('prepping');
   const queue = App.plan.prepQueue.map(B).filter((b) => b && b.stage !== 'prepping');
-  const busy = new Set(prepping.map((b) => b.location));
-  const free = shown.filter((x) => !busy.has(x));
+  const at = (st) => prepping.filter((b) => b.location === st.name);
+  const free = shown.filter((st) => at(st).length < st.capacity);
+  const freeSpots = shown.reduce((n, st) => n + Math.max(0, st.capacity - at(st).length), 0);
   const startBtns = (b, cls) => (free.length
-    ? free.map((st) => batchBtn(b, 'startPrep', multi ? `Start at ${esc(st)}` : 'Start prepping', { station: st }, cls)).join('')
-    : `<span class="muted">${only ? `${esc(only)} is busy` : 'All prep stations are busy'}</span>`);
+    ? free.map((st) => batchBtn(b, 'startPrep', multi ? `Start at ${esc(st.name)}` : 'Start prepping', { station: st.name }, cls)).join('')
+    : `<span class="muted">${only ? `${esc(only.name)} is full` : 'All prep stations are full'}</span>`);
   let html = '';
 
   if (multi) {
     html += `<div class="chips stationpick"><span class="muted">Show:</span>
       <a class="chip ${only ? '' : 'on'}" href="#/prep">All prep stations</a>
-      ${all.map((st, i) => `<a class="chip ${st === only ? 'on' : ''}" href="#/prep/${i + 1}">${esc(st)}</a>`).join('')}</div>`;
+      ${all.map((st, i) => `<a class="chip ${st === only ? 'on' : ''}" href="#/prep/${i + 1}">${esc(st.name)}</a>`).join('')}</div>`;
   }
 
   const activeCard = (b) => {
     const r = b.recipe;
     const target = b.t.prepStart + b.pans * r.prepMinutesPerPan * MIN;
-    return `<div class="card active" style="--c:${esc(r.color)}"><div class="eyebrow">${multi ? esc(b.location) : 'Prepping now'}</div>${title(b)}
+    return `<div class="card active" style="--c:${esc(r.color)}"><div class="eyebrow">Prepping now</div>${title(b)}
       <div class="meta">Usually about <b>${b.pans} pans</b> · ${timerUp(b.t.prepStart)} elapsed · planned ${fmtMin(target - b.t.prepStart)} ${progress(b.t.prepStart, target)}</div>
       ${stepList(b, 'prep', r.prepSteps)}
       <div class="hint">Oven: ${r.ovenTempF}°F for ${r.bakeMinutes} min — oven loads ${S().ovenPansPerLoad} pans at a time.</div>
@@ -271,14 +275,19 @@ pages.prep = (arg) => {
         : `<div class="btnrow">${btn('Done → Oven Staging Rack', 'finishPrep', { id: b.id }, 'primary big')}</div>`}</div>`;
   };
 
-  // One card per prep station (plus anything prepping at a station that was renamed away).
-  const cards = shown.map((st) => {
-    const b = prepping.find((x) => x.location === st);
-    if (b) return activeCard(b);
-    return multi ? `<div class="card idle"><div class="eyebrow">${esc(st)}</div><div class="muted big">Free</div></div>` : '';
-  });
-  if (!only) cards.push(...prepping.filter((b) => !all.includes(b.location)).map(activeCard));
-  if (cards.join('')) html += `<div class="grid prepgrid">${cards.join('')}</div>`;
+  if (blocks) {
+    // One block per prep station: its batches side by side, plus any free spots.
+    const stationBlock = (name, cap, list) => {
+      const spots = Math.max(0, cap - list.length);
+      return `<div class="pstation"><h3>${esc(name)} <span class="muted small">${list.length} of ${cap} batch${cap > 1 ? 'es' : ''}</span></h3>
+        <div class="grid prepgrid">${list.map(activeCard).join('')}${spots ? `<div class="card idle"><div class="muted big">${spots > 1 ? `${spots} free spots` : 'Free'}</div></div>` : ''}</div></div>`;
+    };
+    html += shown.map((st) => stationBlock(st.name, st.capacity, at(st))).join('');
+    const orphans = only ? [] : prepping.filter((b) => !names.includes(b.location)); // station renamed away
+    if (orphans.length) html += stationBlock('Other', orphans.length, orphans);
+  } else if (prepping.length) {
+    html += `<div class="grid prepgrid">${prepping.map(activeCard).join('')}</div>`;
+  }
 
   const next = queue[0];
   if (next) {
@@ -292,7 +301,7 @@ pages.prep = (arg) => {
     // Other dough that's ready: useful when the next one is still chilling,
     // or when more than one prep station is free.
     const alsoReady = queue.slice(1).filter(readyForPrep);
-    if ((!ready || free.length > 1) && alsoReady.length) {
+    if ((!ready || freeSpots > 1) && alsoReady.length) {
       html += section(ready ? 'Also ready to prep' : 'Ready now (out of planned order)', `<div class="grid">${alsoReady.map((b) => `<div class="card">${title(b)}${recipeChips(b.recipe, b)}<div class="meta">In ${esc(b.location)}</div><div class="btnrow">${startBtns(b, '')}</div></div>`).join('')}</div>`);
     }
   } else if (!prepping.length) {
@@ -609,6 +618,10 @@ pages.recipe = (id) => {
 };
 
 // ---------- Settings
+function prepRow(st = { name: '', capacity: 1 }) {
+  return `<div class="steprow prow"><input class="ps-name" value="${esc(st.name)}" placeholder="Station name"><label class="inline small">batches at once <input class="ps-cap" type="number" min="1" max="20" value="${esc(st.capacity)}" inputmode="numeric"></label><button class="btn tiny ghost" data-act="rmStep" type="button">✕</button></div>`;
+}
+
 pages.settings = () => {
   App.locked = true;
   const s = S();
@@ -619,7 +632,10 @@ pages.settings = () => {
       <label class="field wide">Kitchen name<input name="kitchenName" value="${esc(s.kitchenName)}"></label>
       ${list('mixStations', 'Mix stations (one per line)', s.mixStations)}
       ${list('chillLocations', 'Chill locations', s.chillLocations)}
-      ${list('prepStations', 'Prep stations (one per line — one batch panned at each at a time)', s.prepStations)}
+      <div class="field wide">Prep stations <span class="small">— name, and how many batches it can prep side by side</span>
+        <div class="steplist" id="prep-rows">${s.prepStations.map(prepRow).join('')}</div>
+        <div>${btn('+ Add prep station', 'addPrepRow', {}, 'tiny')}</div>
+      </div>
       ${list('ovens', 'Ovens', s.ovens.map((o) => o.name))}
       ${list('coolingAreas', 'Cooling & packing areas', s.coolingAreas)}
     </div></div>
@@ -710,8 +726,12 @@ const ACTIONS = {
     toast('Recipe saved');
     location.hash = '#/recipes';
   },
+  addPrepRow: () => $('#prep-rows').insertAdjacentHTML('beforeend', prepRow()),
   async saveSettings() {
-    await api('PUT', '/api/settings', formData($('#settings-form')));
+    const body = formData($('#settings-form'));
+    body.prepStations = [...document.querySelectorAll('#prep-rows .prow')]
+      .map((row) => ({ name: $('.ps-name', row).value, capacity: $('.ps-cap', row).value }));
+    await api('PUT', '/api/settings', body);
     App.locked = false;
     render();
   },
