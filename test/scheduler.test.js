@@ -118,4 +118,29 @@ const ascending = (list) => list.every((t, i) => i === 0 || t >= list[i - 1]);
   assert.deepStrictEqual(pansIn('small'), [2]);
   console.log('✓ per-oven capacity: 6 pans → 4 in the big oven, 2 in the small one');
 }
+// 6) Large batch: ovens start while it's still being prepped (pans sent ahead).
+{
+  const BIG = recipe('big', 350, 10, { prepMinutesPerPan: 5 });
+  const b = batch(BIG, 'prepping', 8, { location: 'Cookie Prep', t: { prepStart: now - 4 * MIN } });
+  const s = kitchen([b], { ovens: [{ id: 'oven1', name: 'Oven', capacity: 2 }] });
+  s.ovens.oven1 = { targetTempF: 350, readyAt: 0, items: [] };
+  let plan = computePlan(s, now);
+  const p = plan.batches[b.id];
+  assert.strictEqual(p.prepEnd, now - 4 * MIN + 8 * 5 * MIN, 'prep runs 40 min');
+  assert.ok(p.loads[0].start < p.prepEnd, 'first oven load is planned before prep finishes');
+  assert.strictEqual(p.loads[0].start, now - 4 * MIN + 2 * 5 * MIN, 'as soon as 2 pans (one full oven) are done');
+  // Prep sent 2 pans to the rack already: they can go in right now.
+  b.sentGroups = [{ pans: 2, at: now - 2 * MIN, loc: 'Oven Staging Rack', chill: false }];
+  plan = computePlan(s, now);
+  assert.strictEqual(plan.batches[b.id].loads[0].start, now, 'sent pans load right away');
+  assert.strictEqual(plan.batches[b.id].loads.reduce((n, l) => n + l.pans, 0), 8, 'all 8 pans planned');
+  // Pan-chill recipe: pans sent to the chiller can't bake until chilled.
+  const PC = recipe('pc', 350, 10, { prepMinutesPerPan: 5, panChillMinutes: 20 });
+  const c = batch(PC, 'prepping', 4, { location: 'Cookie Prep', t: { prepStart: now - 10 * MIN }, sentGroups: [{ pans: 2, at: now - 5 * MIN, loc: 'Fridge', chill: true }] });
+  const s2 = kitchen([c], { ovens: [{ id: 'oven1', name: 'Oven', capacity: 2 }] });
+  s2.ovens.oven1 = { targetTempF: 350, readyAt: 0, items: [] };
+  plan = computePlan(s2, now);
+  assert.strictEqual(plan.batches[c.id].loads[0].start, now + 15 * MIN, 'chilled pans bake after their 20 min chill');
+  console.log('✓ large batch bakes while it is still being prepped');
+}
 console.log('✓ all scheduler tests passed');

@@ -51,12 +51,21 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    timers. Tapping *Done* sends the batch to the next station, and tells the
    person where to put it ("Put it in the Outdoor Chiller", "Move 2 pans to
    Cooling & Packing – Center").
-4. **Pan counts** – each recipe has an *estimated pans per batch* and *prep
+4. **Big batches: send pans ahead** – while prepping, Cookie Prep can send
+   finished pans ahead (**Send to Oven Staging Rack**, or **Send → Fridge** /
+   **Outdoor Chiller** for pan-chill recipes) a few at a time. Those pans can
+   go into an oven right away, so baking starts while the rest of the batch is
+   still being panned. The planner assumes pans come off the prep line one at a
+   time and plans a full oven load as soon as enough are ready. The prep card
+   says when the ovens want the next pans ("The ovens want the next 2 pans at
+   10:42"). When prep is done, they enter the batch's total pans, including
+   those already sent.
+5. **Pan counts** – each recipe has an *estimated pans per batch* and *prep
    minutes per pan*, which the planner uses for prep time and oven loads. When
    Cookie Prep finishes a batch they enter how many pans they actually filled,
    and the ovens are loaded from that real count. Estimated counts show with
    a `~`.
-5. **Mixing the day before** – for doughs with long or overnight chills, tick
+6. **Mixing the day before** – for doughs with long or overnight chills, tick
    *Mix the day before* on the recipe. New batches of it default to **Bake
    tomorrow** (Overview → Add batches has a bake-day choice for any recipe).
    Today, they show on the Mixing tablet under *🌙 Mix today, bake tomorrow*,
@@ -67,25 +76,25 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    Overview lists *🌙 Tomorrow and later* batches, and any batch can be moved to
    tomorrow or pulled into today. The day boundary uses the container's time
    zone, so set `TZ` in `docker-compose.yml`.
-6. **Chilling after prep** – for doughs that should chill on the pans before
+7. **Chilling after prep** – for doughs that should chill on the pans before
    baking, set *Chill pans after prep* on the recipe. Cookie Prep then sends
    the finished pans to the Fridge or Outdoor Chiller instead of the staging
    rack, and the Chilling tablet counts them down. The Baking tablet shows them
    on the staging rack with where they are and when they'll be ready, and the
    planner holds those loads until the chill is done. The baker can load them
    early with a confirmation.
-7. **Baking** – each oven has its own pan capacity (Settings → Ovens). If there's room
+8. **Baking** – each oven has its own pan capacity (Settings → Ovens). If there's room
    left and other dough at the same temperature is ready, the oven card shows
    **Fill with …** buttons, and the staging rack shows **Add to …**. Batches
    at a different temperature can't share. Each batch in the oven has its own
    timer, bake reminders, **+1 / +5 / +10 min** and custom add-time buttons,
    and **Unload** button, so it comes out on its own schedule.
-8. **Cooling** – pans go into cooling the moment they're unloaded, even if
+9. **Cooling** – pans go into cooling the moment they're unloaded, even if
    the rest of the batch is still baking. Each oven load gets its own group on
    the Cooling & Packing tablet ("Pans 1–2, out of Island Oven at 10:42") with
    its own cooling timer and its own post-bake checklist and timers. When every
    group has cooled, tap **All cooled → Pack**.
-9. **Packing & shares** – set the *Number of shares* in Settings and
+10. **Packing & shares** – set the *Number of shares* in Settings and
    *Cookies per container* on each recipe (0 = not part of shares). Each
    share gets one container of every cookie, so the goal is shares × cookies
    per container (e.g. 10 shares × 6 = 60 chocolate chip). When a batch is
@@ -96,7 +105,7 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    including batches in progress, and how many batches to add if you'll fall
    short. *Clear finished batches* keeps the packed counts. Settings →
    *Reset packed counts (new day)* zeroes them.
-10. **End of day report** – Overview → *🖨 End of day report* (or `/#/report`)
+11. **End of day report** – Overview → *🖨 End of day report* (or `/#/report`)
    opens a printable page. It shows totals (batches, cookies and containers
    packed, pans baked, first mix to last pack), each cookie's shares result
    (met or short by how many), every packed batch with how long each step
@@ -104,7 +113,7 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    what didn't get finished. Tap *Print report* or use the browser's print.
    It's built from the packed counts, so print it before *Reset packed counts
    (new day)*.
-11. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
+12. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
    post-bake or step timer finishes, the tablet shows a red alarm and beeps
    every few seconds until someone taps **OK**. An alarm also stops by itself
    when it's handled: pans unloaded, time added, step checked off, batch moved

@@ -337,3 +337,10 @@ body.alarming { animation: flash .8s infinite alternate; }
 
 .orow .ov-name { flex: 1; }
 .orow .ov-cap { width: 80px; }
+
+/* ---------- send pans ahead from prep */
+.sendahead { margin-top: .9rem; padding: .8rem; background: #eef6ff; border: 2px solid #cfe2f7; border-radius: 12px; }
+.sendahead .stepper { flex-wrap: wrap; margin: .4rem 0; }
+.sendahead .stepper .btn:not(:first-child):not(:nth-child(3)) { font-size: 1.05rem; min-width: auto; }
+.page-prep > .card.next:first-child, .page-prep > .empty:first-child { margin-top: 0; }
+.page-prep .stationpick { margin-top: 1.2rem; }

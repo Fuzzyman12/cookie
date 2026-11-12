@@ -298,6 +298,34 @@ const act = (id, a, body = {}) => call('POST', `/api/batches/${id}/${a}`, body);
     for (const x of state.batches.filter((x) => x.recipeId === night.id)) await call('DELETE', `/api/batches/${x.id}`);
     await call('DELETE', `/api/recipes/${night.id}`);
 
+    // Big batch: send finished pans ahead so the ovens start during prep
+    await call('POST', '/api/batches', { recipeId: 'r-snickerdoodle', count: 1 });
+    ({ state } = await get());
+    const big = state.batches.at(-1).id;
+    await act(big, 'startMix'); await act(big, 'finishMix'); await act(big, 'startPrep');
+    await assert.rejects(act(big, 'loadOven', { ovenId: 'oven2' }), /No pans of .* have been sent from prep yet/);
+    r = await act(big, 'sendPans', { pans: 2 });
+    assert.match(r.message, /2 pans of Snickerdoodles #\d+ → Oven Staging Rack \(2 sent so far\)/);
+    await act(big, 'loadOven', { ovenId: 'oven2' });
+    ({ state } = await get());
+    let bg = state.batches.find((x) => x.id === big);
+    assert.deepStrictEqual([bg.stage, bg.pansInOven], ['prepping', 2], 'baking while still prepping');
+    await assert.rejects(act(big, 'loadOven', { ovenId: 'oven1' }), /No pans of .* sent from prep yet/);
+    await call('POST', '/api/ovens/oven2/unload');
+    ({ state } = await get());
+    bg = state.batches.find((x) => x.id === big);
+    assert.deepStrictEqual([bg.stage, bg.pansBaked, bg.coolGroups.length], ['prepping', 2, 1], 'out of the oven and cooling, prep continues');
+    await assert.rejects(act(big, 'finishPrep', { pans: 1 }), /already sent/);
+    r = await act(big, 'finishPrep', { pans: 5 });
+    assert.match(r.message, /last 3 pans/);
+    ({ state } = await get());
+    bg = state.batches.find((x) => x.id === big);
+    assert.deepStrictEqual([bg.stage, bg.pans, bg.pansBaked], ['baking', 5, 2]);
+    await act(big, 'loadOven', { ovenId: 'oven2' });
+    ({ state } = await get());
+    assert.strictEqual(state.ovens.oven2.items[0].pans, 2, 'rest of the batch loads normally');
+    await call('DELETE', `/api/batches/${big}`);
+
     // Alarm dismissals are shared by all tablets
     await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2', 'cool-x-0-5'] });
     await call('POST', '/api/alarms/dismiss', { keys: ['bake-oven1-1-2'] });

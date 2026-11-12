@@ -46,7 +46,12 @@ const B = (id) => App.state.batches.find((b) => b.id === id);
 const P = (id) => (App.plan && App.plan.batches[id]) || { loads: [] };
 const inStage = (...st) => App.state.batches.filter((b) => st.includes(b.stage));
 const ovenName = (id) => (S().ovens.find((o) => o.id === id) || {}).name || id;
-const remainingPans = (b) => b.pans - b.pansBaked - b.pansInOven;
+// While a batch is still being prepped, only pans prep already sent ahead can go in an oven.
+const pansSent = (b) => (b.sentGroups || []).reduce((n, g) => n + g.pans, 0);
+const remainingPans = (b) => (b.stage === 'prepping' ? pansSent(b) : b.pans) - b.pansBaked - b.pansInOven;
+// Sent pans that have finished any pan chill (minus those already in/out of an oven).
+const pansReadyNow = (b) => Math.max(0, (b.sentGroups || []).reduce((n, g) => n + (g.chill && now() < g.at + (Number(b.recipe.panChillMinutes) || 0) * MIN ? 0 : g.pans), 0) - b.pansBaked - b.pansInOven);
+const sentStillChilling = (b) => (b.sentGroups || []).some((g) => g.chill) && remainingPans(b) > 0 && pansReadyNow(b) === 0;
 const loadEnd = (cur) => cur.startedAt + (cur.bakeMinutes + (cur.extraMinutes || 0)) * MIN;
 // Until Cookie Prep enters the real count, a batch's pans are an estimate.
 const pansText = (b) => (b.pansEstimated ? `~${b.pans}` : `${b.pans}`);
@@ -57,7 +62,7 @@ const readyForPrep = (b) => b.stage === 'ready_prep' || chillDone(b);
 const panChillEnd = (b) => b.t.panChillStart + (Number(b.recipe.panChillMinutes) || 0) * MIN;
 const panChillDone = (b) => b.stage === 'pan_chilling' && now() >= panChillEnd(b);
 // Pans the baker can load now (pans still chilling can be loaded early, with a confirm).
-const loadable = (b) => (['staged', 'baking'].includes(b.stage) && remainingPans(b) > 0) || b.stage === 'pan_chilling';
+const loadable = (b) => (['staged', 'baking', 'prepping'].includes(b.stage) && remainingPans(b) > 0) || b.stage === 'pan_chilling';
 
 // ------------------------------------------------------------------ UI snippets
 const btn = (label, act, data = {}, cls = '') =>
@@ -287,14 +292,14 @@ pages.chilling = () => {
 // ---------- Prep
 // #/prep shows every prep station; #/prep/2 shows only the 2nd (for a tablet at that table).
 // Each station can hold up to `capacity` batches (started by hand); the planner
-// still schedules one batch at a time per station.
+// still schedules one batch at a time per station. Layout matches Mixing:
+// Up next on top, then the station picker, then the stations.
 pages.prep = (arg) => {
   const all = S().prepStations; // [{ name, capacity }]
   const names = all.map((st) => st.name);
   const only = arg ? all[Number(arg) - 1] : null;
   const shown = only ? [only] : all;
   const multi = all.length > 1;
-  const blocks = multi || all.some((st) => st.capacity > 1); // show a block per station
   const prepping = inStage('prepping');
   const queue = App.plan.prepQueue.map(B).filter((b) => b && b.stage !== 'prepping');
   const at = (st) => prepping.filter((b) => b.location === st.name);
@@ -305,43 +310,7 @@ pages.prep = (arg) => {
     : `<span class="muted">${only ? `${esc(only.name)} is full` : 'All prep stations are full'}</span>`);
   let html = '';
 
-  if (multi) html += stationPicker('prep', 'All prep stations', names, only?.name);
-
-  const activeCard = (b) => {
-    const r = b.recipe;
-    const target = b.t.prepStart + b.pans * r.prepMinutesPerPan * MIN;
-    return `<div class="card active" style="--c:${esc(r.color)}"><div class="eyebrow">Prepping now</div>${title(b)}
-      <div class="meta">Usually about <b>${b.pans} pans</b> · ${timerUp(b.t.prepStart)} elapsed · planned ${fmtMin(target - b.t.prepStart)} ${progress(b.t.prepStart, target)}</div>
-      ${stepList(b, 'prep', r.prepSteps)}
-      <div class="hint">Oven: ${r.ovenTempF}°F for ${r.bakeMinutes} min — ${S().ovens.map((o) => `${esc(o.name)} holds ${ovenCap(o.id)}`).join(', ')} pans.</div>
-      <div class="pancount">
-        <label for="pans-${b.id}">How many pans did you fill?</label>
-        <div class="stepper">
-          ${btn('−', 'panStep', { target: `pans-${b.id}`, delta: -1, est: b.pans }, 'big')}
-          <input id="pans-${b.id}" type="number" min="1" max="200" step="1" inputmode="numeric" placeholder="~${b.pans}">
-          ${btn('+', 'panStep', { target: `pans-${b.id}`, delta: 1, est: b.pans }, 'big')}
-        </div>
-      </div>
-      ${r.panChillMinutes > 0
-        ? `<div class="hint">❄️ Chill the pans ${r.panChillMinutes} min before baking. ${esc(r.panChillNotes)}</div>
-           <div class="btnrow">${S().chillLocations.map((loc) => btn(`Done → ${esc(loc)}`, 'finishPrep', { id: b.id, to: loc }, 'primary big')).join('')}</div>`
-        : `<div class="btnrow">${btn('Done → Oven Staging Rack', 'finishPrep', { id: b.id }, 'primary big')}</div>`}</div>`;
-  };
-
-  if (blocks) {
-    // One block per prep station: its batches side by side, plus any free spots.
-    const stationBlock = (name, cap, list) => {
-      const spots = Math.max(0, cap - list.length);
-      return `<div class="pstation"><h3>${esc(name)} <span class="muted small">${list.length} of ${cap} batch${cap > 1 ? 'es' : ''}</span></h3>
-        <div class="grid prepgrid">${list.map(activeCard).join('')}${spots ? `<div class="card idle"><div class="muted big">${spots > 1 ? `${spots} free spots` : 'Free'}</div></div>` : ''}</div></div>`;
-    };
-    html += shown.map((st) => stationBlock(st.name, st.capacity, at(st))).join('');
-    const orphans = only ? [] : prepping.filter((b) => !names.includes(b.location)); // station renamed away
-    if (orphans.length) html += stationBlock('Other', orphans.length, orphans);
-  } else if (prepping.length) {
-    html += `<div class="grid prepgrid">${prepping.map(activeCard).join('')}</div>`;
-  }
-
+  // ---- Up next (always first)
   const next = queue[0];
   if (next) {
     const r = next.recipe;
@@ -349,16 +318,34 @@ pages.prep = (arg) => {
     const p = P(next.id);
     html += `<div class="card next" style="--c:${esc(r.color)}"><div class="eyebrow">Up next to prep</div>${title(next)}${recipeChips(r, next)}
       <div class="meta">${ready ? `Dough is ready in <b>${esc(next.location)}</b>.` : `${STAGE_LABEL[next.stage]}${next.stage === 'chilling' ? ` in ${esc(next.location)}` : ''} — ready ${fmtTime(p.prepReady)} (${relTime(p.prepReady)})`}${multi && p.prepStation ? ` · planned for ${esc(p.prepStation)}` : ''}</div>
-      <h4>Prep steps</h4><ol class="steps preview">${r.prepSteps.map((s) => `<li><span class="stext">${esc(s.text)}</span></li>`).join('')}</ol>
+      <h4>Prep steps</h4><ol class="steps preview">${r.prepSteps.map((st) => `<li><span class="stext">${esc(st.text)}</span></li>`).join('')}</ol>
       <div class="btnrow">${ready ? startBtns(next, 'primary big') : ''}</div></div>`;
-    // Other dough that's ready: useful when the next one is still chilling,
-    // or when more than one prep station is free.
-    const alsoReady = queue.slice(1).filter(readyForPrep);
-    if ((!ready || idleStations > 1) && alsoReady.length) {
-      html += section(ready ? 'Also ready to prep' : 'Ready now (out of planned order)', `<div class="grid">${alsoReady.map((b) => `<div class="card">${title(b)}${recipeChips(b.recipe, b)}<div class="meta">In ${esc(b.location)}</div><div class="btnrow">${startBtns(b, '')}</div></div>`).join('')}</div>`);
-    }
   } else if (!prepping.length) {
     html += empty('Nothing to prep yet.');
+  }
+
+  if (multi) html += stationPicker('prep', 'All prep stations', names, only?.name);
+
+  // ---- Stations: full-width cards when one station is shown, a grid otherwise
+  const wide = !!only || !multi;
+  const cards = (list) => (wide ? list.join('') : `<div class="grid prepgrid">${list.join('')}</div>`);
+  const stationBlock = (name, cap, list) => {
+    const spots = Math.max(0, cap - list.length);
+    const items = [...list.map(prepCard)];
+    if (spots && (multi || cap > 1)) items.push(`<div class="card idle"><div class="muted big">${spots > 1 ? `${spots} free spots` : 'Free'}</div></div>`);
+    if (!items.length) return '';
+    return section(`${esc(name)}${cap > 1 || multi ? ` <span class="muted small">${list.length} of ${cap} batch${cap > 1 ? 'es' : ''}</span>` : ''}`, cards(items));
+  };
+  html += shown.map((st) => stationBlock(st.name, st.capacity, at(st))).join('');
+  const orphans = only ? [] : prepping.filter((b) => !names.includes(b.location)); // station renamed away
+  if (orphans.length) html += stationBlock('Other', orphans.length, orphans);
+
+  // ---- Other dough that's ready (next is still chilling, or more than one station is free)
+  if (next) {
+    const alsoReady = queue.slice(1).filter(readyForPrep);
+    if ((!readyForPrep(next) || idleStations > 1) && alsoReady.length) {
+      html += section(readyForPrep(next) ? 'Also ready to prep' : 'Ready now (out of planned order)', `<div class="grid">${alsoReady.map((b) => `<div class="card">${title(b)}${recipeChips(b.recipe, b)}<div class="meta">In ${esc(b.location)}</div><div class="btnrow">${startBtns(b, '')}</div></div>`).join('')}</div>`);
+    }
   }
 
   html += section('Prep queue', queue.length > 1 ? table(['#', 'Batch', 'Status', 'Dough ready', 'Planned prep'], queue.slice(1).map((b, i) => [
@@ -369,6 +356,58 @@ pages.prep = (arg) => {
   return html;
 };
 
+// A batch being prepped: checklist, send finished pans ahead, then the total pan count.
+function prepCard(b) {
+  const r = b.recipe;
+  const target = b.t.prepStart + b.pans * r.prepMinutesPerPan * MIN;
+  const sent = pansSent(b);
+  const chill = Number(r.panChillMinutes) > 0;
+  // When do the ovens want this batch's next pans? Skip planned loads that the
+  // pans already sent (and still waiting on the rack/in a chiller) will fill.
+  let waiting = Math.max(0, remainingPans(b));
+  let nextLoad = null;
+  for (const l of P(b.id).loads.filter((x) => !x.inOven).sort((x, y) => x.start - y.start)) {
+    if (waiting >= l.pans) { waiting -= l.pans; continue; }
+    nextLoad = { ...l, pans: l.pans - waiting };
+    break;
+  }
+  const onRack = Math.max(0, remainingPans(b));
+  const suggest = nextLoad ? nextLoad.pans : Math.min(2, Math.max(1, b.pans - sent));
+  const wantHint = [
+    onRack && onRack < sent ? `${onRack} of them ${onRack > 1 ? 'are' : 'is'} waiting for an oven.` : '',
+    nextLoad ? `${nextLoad.start <= now() + MIN ? '<b>The ovens are ready for more now</b>' : `The ovens want the next <b>${nextLoad.pans} pan${nextLoad.pans > 1 ? 's' : ''}</b> at <b>${fmtTime(nextLoad.start)}</b> (${relTime(nextLoad.start)})`} — send them as soon as they're panned.` : '',
+  ].filter(Boolean).join(' ');
+  const sendBtns = chill
+    ? S().chillLocations.map((loc) => btn(`Send → ${esc(loc)}`, 'sendPans', { id: b.id, to: loc, suggest }, 'big')).join('')
+    : btn('Send to Oven Staging Rack', 'sendPans', { id: b.id, suggest }, nextLoad && nextLoad.start <= now() + MIN ? 'primary big' : 'big');
+  const done = chill
+    ? S().chillLocations.map((loc) => btn(`Done → ${esc(loc)}`, 'finishPrep', { id: b.id, to: loc }, 'primary big')).join('')
+    : btn(sent ? 'Done → last pans to the rack' : 'Done → Oven Staging Rack', 'finishPrep', { id: b.id }, 'primary big');
+  return `<div class="card active" style="--c:${esc(r.color)}"><div class="eyebrow">Prepping now</div>${title(b)}
+    <div class="meta">Usually about <b>${b.pans} pans</b> · ${timerUp(b.t.prepStart)} elapsed · planned ${fmtMin(target - b.t.prepStart)} ${progress(b.t.prepStart, target)}</div>
+    ${stepList(b, 'prep', r.prepSteps)}
+    <div class="hint">Oven: ${r.ovenTempF}°F for ${r.bakeMinutes} min — ${S().ovens.map((o) => `${esc(o.name)} holds ${ovenCap(o.id)}`).join(', ')} pans.${chill ? ` ❄️ Chill the pans ${r.panChillMinutes} min before baking. ${esc(r.panChillNotes)}` : ''}</div>
+    <div class="sendahead">
+      <div class="eyebrow">Send finished pans ahead${chill ? ' to chill' : ' to the ovens'}</div>
+      <div class="stepper">
+        ${btn('−', 'panStep', { target: `send-${b.id}`, delta: -1, est: suggest }, 'big')}
+        <input id="send-${b.id}" type="number" min="1" max="200" step="1" inputmode="numeric" placeholder="${suggest}">
+        ${btn('+', 'panStep', { target: `send-${b.id}`, delta: 1, est: suggest }, 'big')}
+        ${sendBtns}
+      </div>
+      <div class="muted small">${sent ? `<b>${sent} pan${sent > 1 ? 's' : ''} sent so far</b>${onRack === sent ? ', waiting for an oven' : ` (${b.pansInOven} in an oven, ${b.pansBaked} out)`}. ` : ''}${wantHint}</div>
+    </div>
+    <div class="pancount">
+      <label for="pans-${b.id}">${sent ? `When you're done: how many pans in total, including the ${sent} already sent?` : 'How many pans did you fill?'}</label>
+      <div class="stepper">
+        ${btn('−', 'panStep', { target: `pans-${b.id}`, delta: -1, est: Math.max(b.pans, sent) }, 'big')}
+        <input id="pans-${b.id}" type="number" min="${Math.max(1, sent)}" max="200" step="1" inputmode="numeric" placeholder="~${Math.max(b.pans, sent)}">
+        ${btn('+', 'panStep', { target: `pans-${b.id}`, delta: 1, est: Math.max(b.pans, sent) }, 'big')}
+      </div>
+    </div>
+    <div class="btnrow">${done}</div></div>`;
+}
+
 // ---------- Baking
 pages.baking = () => {
   let html = `<div class="grid ovens">${S().ovens.map(ovenCard).join('')}</div>`;
@@ -377,9 +416,11 @@ pages.baking = () => {
     .sort((a, b) => (P(a.id).loads.find((l) => !l.inOven)?.start ?? 0) - (P(b.id).loads.find((l) => !l.inOven)?.start ?? 0));
   html += section('Oven Staging Rack', staged.length ? `<div class="grid">${staged.map((b) => {
     const next = P(b.id).loads.find((l) => !l.inOven);
-    const chilling = b.stage === 'pan_chilling' && !panChillDone(b);
-    const where = b.stage === 'pan_chilling'
+    const chilling = (b.stage === 'pan_chilling' && !panChillDone(b)) || sentStillChilling(b);
+    const chillGroup = (b.sentGroups || []).filter((g) => g.chill).sort((x, y) => x.at - y.at).find((g) => now() < g.at + b.recipe.panChillMinutes * MIN);
+    let where = b.stage === 'pan_chilling'
       ? `<div class="hint">❄️ In the <b>${esc(b.location)}</b> — ${chilling ? `chilled in ${timerDown(panChillEnd(b), '', '', 'good')}` : 'chilled, ready to bake'}</div>` : '';
+    if (b.stage === 'prepping') where = `<div class="hint">🍪 Sent ahead from prep — the rest of the batch is still being panned.${chillGroup ? ` ❄️ Chilling: next pans ready in ${timerDown(chillGroup.at + b.recipe.panChillMinutes * MIN, '', '', 'good')}` : ''}</div>`;
     return `<div class="card ${chilling ? 'idle' : ''}" style="--c:${esc(b.recipe.color)}">${title(b)}
       <div class="meta"><b>${remainingPans(b)}</b> of ${b.pans} pans waiting · ${b.recipe.ovenTempF}°F · ${b.recipe.bakeMinutes} min${next ? ` · planned: ${esc(ovenName(next.ovenId))} ${fmtTime(next.start)}${next.shared ? ' (shared load)' : ''}` : ''}</div>
       ${where}
@@ -461,7 +502,7 @@ function ovenCard(o) {
     body = `<div class="eyebrow">Baking · ${cap - room} of ${cap} pans</div>${items.map((it) => ovenItemBlock(o, it)).join('')}`;
     if (room > 0) {
       // Fill the spare room with other dough that bakes at the same temperature.
-      const fillers = App.state.batches.filter((b) => loadable(b) && remainingPans(b) > 0 && b.recipe.ovenTempF === temp && !(b.stage === 'pan_chilling' && !panChillDone(b)));
+      const fillers = App.state.batches.filter((b) => loadable(b) && remainingPans(b) > 0 && b.recipe.ovenTempF === temp && !(b.stage === 'pan_chilling' && !panChillDone(b)) && !sentStillChilling(b));
       body += `<div class="fill"><div class="eyebrow">Room for ${room} more pan${room > 1 ? 's' : ''} at ${temp}°F</div>
         ${fillers.length ? `<div class="btnrow">${fillers.map((b, i) => loadButton(b, o, i === 0, false, `Fill with ${esc(b.label)} (${Math.min(room, remainingPans(b))} pan${Math.min(room, remainingPans(b)) > 1 ? 's' : ''})`)).join('')}</div>`
           : '<div class="muted small">Nothing else at this temperature is ready yet.</div>'}</div>`;
@@ -475,6 +516,8 @@ function ovenCard(o) {
       const nb = B(it.batchId);
       if (!nb) return '';
       if (nb.stage === 'pan_chilling' && !panChillDone(nb)) return `<span class="muted">${esc(nb.label)}: chilling in ${esc(nb.location)} — ready ${relTime(panChillEnd(nb))}</span>`;
+      if (nb.stage === 'prepping' && !loadable(nb)) return `<span class="muted">${esc(nb.label)}: still being prepped — planned ${relTime(next.start)}; prep sends pans over as they're done</span>`;
+      if (sentStillChilling(nb)) return `<span class="muted">${esc(nb.label)}: sent pans still chilling</span>`;
       if (!loadable(nb)) return `<span class="muted">${esc(nb.label)}: waiting on prep — ready ${relTime(P(nb.id).panChillEnd ?? P(nb.id).prepEnd)}</span>`;
       return loadButton(nb, o, i === 0 && !needTemp, false, `Load ${esc(nb.label)}`);
     }).join('');
@@ -628,7 +671,7 @@ pages.cooling = () => {
       ${groups}
       ${allOut
         ? `<div class="btnrow">${batchBtn(b, 'finishCooling', 'All cooled → Pack', {}, ready && !unchecked ? 'primary big' : 'big', warn ? `${warn} Move ${b.label} to packing anyway?` : '')}</div>`
-        : `<div class="hint">${remainingPans(b) + b.pansInOven} more pan${remainingPans(b) + b.pansInOven > 1 ? 's' : ''} still baking or on the rack — they'll show up here when unloaded.</div>`}
+        : `<div class="hint">${b.stage === 'prepping' ? 'The rest of this batch is still being prepped — more pans will show up here as they come out of the oven.' : `${remainingPans(b) + b.pansInOven} more pan${remainingPans(b) + b.pansInOven > 1 ? 's' : ''} still baking or on the rack — they'll show up here when unloaded.`}</div>`}
     </div>`;
   }).join('')}</div>` : empty('Nothing cooling.'));
 
@@ -978,14 +1021,22 @@ const ACTIONS = {
     return api('POST', `/api/batches/${d.id}/finishPacking`, { containers, perContainer });
   },
   resetPacked: () => confirm('Reset all packed counts to zero for a new day?') && api('POST', '/api/pack/reset'),
+  sendPans: (d) => {
+    const input = document.getElementById(`send-${d.id}`);
+    const pans = input.value === '' ? Number(d.suggest) : Number(input.value);
+    if (!Number.isInteger(pans) || pans < 1) { toast('Enter how many pans to send', 'error'); input.focus(); return; }
+    return api('POST', `/api/batches/${d.id}/sendPans`, { pans, to: d.to }).then(() => { input.value = ''; });
+  },
   finishPrep: (d) => {
     const input = document.getElementById(`pans-${d.id}`);
     const pans = Number(input.value);
+    const sent = pansSent(B(d.id));
     if (input.value === '' || !Number.isInteger(pans) || pans < 1) {
-      toast('Enter how many pans you filled first', 'error');
+      toast(sent ? 'Enter the total number of pans (including the ones already sent)' : 'Enter how many pans you filled first', 'error');
       input.focus();
       return;
     }
+    if (pans < sent) { toast(`${sent} pans were already sent — the total can't be less`, 'error'); input.focus(); return; }
     return api('POST', `/api/batches/${d.id}/finishPrep`, { pans, to: d.to });
   },
   addBatches: () => api('POST', '/api/batches', { recipeId: $('#add-recipe').value, count: $('#add-count').value, rush: $('#add-rush').checked, bakeDay: $('#add-day').value }),

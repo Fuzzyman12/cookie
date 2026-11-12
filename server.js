@@ -289,6 +289,12 @@ function pullFromOvens(b) {
   b.pansInOven = 0;
 }
 
+// ---------------------------------------------------------------- pans on their way to the ovens
+// While a batch is still being prepped, only the pans prep has already sent
+// over (sentGroups) can be loaded; after prep, every pan not yet baked can.
+const pansSent = (b) => (b.sentGroups || []).reduce((sum, g) => sum + g.pans, 0);
+const loadablePans = (b) => (b.stage === 'prepping' ? pansSent(b) : b.pans) - b.pansBaked - b.pansInOven;
+
 // ---------------------------------------------------------------- oven contents
 const ovenCap = (ovenId) => ovenCapacity(S().ovens.find((o) => o.id === ovenId), S());
 const pansIn = (o) => o.items.reduce((sum, it) => sum + it.pans, 0);
@@ -349,18 +355,49 @@ const actions = {
     b.t.prepStart = Date.now();
     setStage(b, 'prepping', st);
   },
+  // Send some finished pans ahead (large batches) so the ovens can start while
+  // the rest is still being panned. Pan-chill recipes send them to a chiller.
+  sendPans(b, { pans, to }) {
+    need(b, 'prepping');
+    const count = Number(pans);
+    if (!Number.isInteger(count) || count < 1 || count > 200) fail('Enter how many pans to send (a whole number, 1 or more)');
+    const panChill = Number(b.recipe.panChillMinutes) || 0;
+    const chill = panChill > 0 && to !== 'rack';
+    const loc = chill ? to || S().chillLocations[0] || 'Fridge' : 'Oven Staging Rack';
+    (b.sentGroups ||= []).push({ pans: count, at: Date.now(), loc, chill });
+    if (b.pansEstimated && pansSent(b) > b.pans) b.pans = pansSent(b); // already more than the estimate
+    b.t.firstSent ||= Date.now();
+    return { message: `${count} pan${count > 1 ? 's' : ''} of ${b.label} → ${loc}${chill ? ` — chill ${panChill} min` : ''} (${pansSent(b)} sent so far)` };
+  },
   finishPrep(b, { pans, to }) {
     need(b, 'prepping');
     const filled = Number(pans);
+    const sent = pansSent(b);
     if (!Number.isInteger(filled) || filled < 1 || filled > 200) fail('Enter how many pans were filled (a whole number, 1 or more)');
+    if (filled < sent) fail(`${sent} pans of ${b.label} were already sent — the total can't be less than that`);
     b.pans = filled;
     b.pansEstimated = false;
     rememberPans(state, b.recipeId, filled);
-    b.t.prepEnd = Date.now();
+    const now = Date.now();
+    b.t.prepEnd = now;
     const panChill = Number(b.recipe.panChillMinutes) || 0;
-    if (panChill > 0 && to !== 'rack') {
-      const loc = to || S().chillLocations[0] || 'Fridge';
-      b.t.panChillStart = Date.now();
+    const chill = panChill > 0 && to !== 'rack';
+    const loc = chill ? to || S().chillLocations[0] || 'Fridge' : 'Oven Staging Rack';
+    const rest = filled - sent;
+    if (sent > 0) {
+      // Some pans went ahead during prep: the batch is already on its way to the ovens.
+      if (rest > 0) b.sentGroups.push({ pans: rest, at: now, loc, chill });
+      if (b.pansBaked >= filled && b.pansInOven === 0) {
+        b.t.allOut ||= now;
+        setStage(b, 'cooling', b.coolingArea ||= pickCoolingArea());
+        return { message: `${b.label}: every pan is already out of the oven` };
+      }
+      b.t.bakeStart ||= now;
+      setStage(b, 'baking', 'Ovens');
+      return { message: rest > 0 ? `Put the last ${rest} pan${rest > 1 ? 's' : ''} of ${b.label} ${chill ? `in the ${loc} — chill ${panChill} min` : 'on the Oven Staging Rack'}` : `${b.label}: all ${filled} pans sent` };
+    }
+    if (chill) {
+      b.t.panChillStart = now;
       setStage(b, 'pan_chilling', loc);
       return { message: `Put ${filled} pans of ${b.label} in the ${loc} — chill ${panChill} min before baking` };
     }
@@ -374,7 +411,7 @@ const actions = {
     return { message: `Move ${b.pans} pans of ${b.label} to the Oven Staging Rack` };
   },
   loadOven(b, { ovenId }) {
-    need(b, 'staged', 'baking', 'pan_chilling'); // baker may load straight from the chiller
+    need(b, 'staged', 'baking', 'pan_chilling', 'prepping'); // chiller pans and pans sent ahead from prep too
     const o = oven(ovenId);
     const room = ovenCap(ovenId) - pansIn(o);
     if (room <= 0) fail(`${ovenName(ovenId)} is full (${ovenCap(ovenId)} pans)`, 409);
@@ -382,8 +419,8 @@ const actions = {
     // Batches can share an oven only at the same temperature.
     const other = o.items.find((it) => it.tempF !== tempF);
     if (other) fail(`${ovenName(ovenId)} is baking ${other.label} at ${other.tempF}°F — ${b.label} bakes at ${tempF}°F`, 409);
-    const remaining = b.pans - b.pansBaked - b.pansInOven;
-    if (remaining <= 0) fail('All pans of this batch are already baked or in an oven', 409);
+    const remaining = loadablePans(b);
+    if (remaining <= 0) fail(b.stage === 'prepping' ? `No pans of ${b.label} have been sent from prep yet` : 'All pans of this batch are already baked or in an oven', 409);
     const pans = Math.min(room, remaining);
     b.loadCount = (b.loadCount || 0) + 1;
     o.items.push({
@@ -397,6 +434,7 @@ const actions = {
       b.t.bakeStart = Date.now();
       setStage(b, 'baking', 'Ovens');
     }
+    b.t.bakeStart ||= Date.now(); // still prepping: baking has started anyway
     const sharing = o.items.length > 1;
     return { message: `${pans} pan${pans > 1 ? 's' : ''} of ${b.label} into ${ovenName(ovenId)}${sharing ? ` — now ${pansIn(o)} of ${ovenCap(ovenId)} pans` : ''}` };
   },
@@ -444,6 +482,7 @@ const actions = {
       delete b.packed;
     }
     if (order.indexOf(stage) <= order.indexOf('staged')) { b.pansBaked = 0; b.coolGroups = []; }
+    if (order.indexOf(stage) <= order.indexOf('prepping')) b.sentGroups = [];
     if (['cooling', 'packing', 'done'].includes(stage)) {
       const out = b.coolGroups.reduce((sum, g) => sum + g.pans, 0);
       if (out < b.pans) b.coolGroups.push({ pans: b.pans - out, outAt: now, ovenId: null });
@@ -633,7 +672,8 @@ app.post('/api/ovens/:id/unload', route((req) => {
   // even if the rest of the batch is still on the rack or in another oven.
   b.coolGroups.push({ pans: c.pans, outAt: now, ovenId: req.params.id });
   b.t.coolStart ||= now;
-  if (b.pansBaked >= b.pans && b.pansInOven === 0) {
+  // (A batch still being prepped can't be finished baking yet.)
+  if (b.stage !== 'prepping' && b.pansBaked >= b.pans && b.pansInOven === 0) {
     b.t.allOut = now;
     setStage(b, 'cooling', b.coolingArea);
   }
