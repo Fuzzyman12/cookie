@@ -18,13 +18,15 @@ Bookmark (or "Add to Home Screen") the station URL:
 
 | Station | URL |
 |---|---|
-| Mixing (Mix Stations #1–#4) | `/#/mixing` |
+| Mixing (all Mix Stations) | `/#/mixing` |
+| One mix station only (1st, 2nd, …) | `/#/mixing/1`, `/#/mixing/2` |
 | Chilling (Fridge, Outdoor Chiller) | `/#/chilling` |
 | Cookie Prep (all prep stations) | `/#/prep` |
 | One prep station only (1st, 2nd, …) | `/#/prep/1`, `/#/prep/2` |
 | Baking (ovens + Oven Staging Rack) | `/#/baking` |
 | Cooling & Packing | `/#/cooling` |
 | Manager overview / timeline | `/#/overview` |
+| End of day report (printable) | `/#/report` |
 | Recipes / Settings | `/#/recipes`, `/#/settings` |
 
 Data (recipes, batches, settings) is saved to the `cookie-data` Docker volume.
@@ -79,7 +81,15 @@ Without Docker: `npm install && npm start` (Node 20+). Run `npm test` for the en
    including batches in progress, and how many batches to add if you'll fall
    short. *Clear finished batches* keeps the packed counts. Settings →
    *Reset packed counts (new day)* zeroes them.
-9. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
+9. **End of day report** – Overview → *🖨 End of day report* (or `/#/report`)
+   opens a printable page. It shows totals (batches, cookies and containers
+   packed, pans baked, first mix to last pack), each cookie's shares result
+   (met or short by how many), every packed batch with how long each step
+   actually took (mix, chill, prep, pan chill, bake, cool, pack, total), and
+   what didn't get finished. Tap *Print report* or use the browser's print.
+   It's built from the packed counts, so print it before *Reset packed counts
+   (new day)*.
+10. **Alarms** – when a chill, bake, bake reminder, oven preheat, cooling,
    post-bake or step timer finishes, the tablet shows a red alarm and beeps
    every few seconds until someone taps **OK**. An alarm also stops by itself
    when it's handled: pans unloaded, time added, step checked off, batch moved

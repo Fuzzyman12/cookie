@@ -283,3 +283,32 @@ body.alarming { animation: flash .8s infinite alternate; }
 .packtotal { font-size: 1.2rem; font-weight: 800; color: var(--ok); }
 .ok { color: var(--ok); font-weight: 700; }
 .warn-text { color: var(--warn); font-weight: 700; }
+
+/* ---------- end of day report */
+.report { background: var(--surface); border-radius: var(--radius); padding: 1.2rem 1.4rem; border: 1px solid var(--line); }
+.report h1 { font-size: 1.6rem; margin: 0; }
+.report h2 { margin-top: 1.6rem; border-bottom: 2px solid var(--line); padding-bottom: .3rem; }
+.report-head { margin-bottom: 1rem; }
+.report-actions { margin: 0 0 1rem; }
+.report-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .6rem; }
+.report-stats > div { border: 1px solid var(--line); border-radius: 10px; padding: .6rem .8rem; display: flex; flex-direction: column; }
+.report-stats b { font-size: 1.4rem; }
+.report-stats span { color: var(--muted); font-size: .8rem; }
+.report table { font-size: .9rem; }
+.report th, .report td { padding: .4rem .5rem; }
+.section h2 .btn.tiny { margin-left: .6rem; vertical-align: middle; }
+
+@media print {
+  @page { margin: 12mm; }
+  :root { font-size: 11pt; }
+  body { background: #fff !important; animation: none !important; box-shadow: none !important; }
+  .topbar, .alarms, .sound-banner, .toasts, .noprint { display: none !important; }
+  main { padding: 0; max-width: none; }
+  .report { border: none; padding: 0; }
+  .report table { font-size: 9pt; }
+  .tablewrap { overflow: visible; border-color: #999; }
+  th, td { border-bottom: 1px solid #ccc; }
+  tr, .report-stats > div { break-inside: avoid; }
+  .report h2 { break-after: avoid; }
+}
+.report td:not(:first-child), .report th { white-space: nowrap; }

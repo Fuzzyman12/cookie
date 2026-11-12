@@ -126,18 +126,44 @@ function stationCount(key) {
 }
 
 // ---------- Mixing
-pages.mixing = () => {
+// #/mixing shows every mix station; #/mixing/2 shows only the 2nd (for a tablet at that station).
+pages.mixing = (arg) => {
+  const all = S().mixStations;
+  const only = arg ? all[Number(arg) - 1] : null;
+  const shown = only ? [only] : all;
   const mixing = inStage('mixing');
   const queue = App.plan.mixQueue.map(B).filter(Boolean);
   const busy = new Set(mixing.map((b) => b.location));
-  const free = S().mixStations.filter((x) => !busy.has(x));
+  const free = shown.filter((x) => !busy.has(x));
   let html = '';
+
+  if (all.length > 1) html += stationPicker('mixing', 'All mix stations', all, only);
+
+  const stationCard = (st) => {
+    const b = mixing.find((x) => x.location === st);
+    if (!b) return `<div class="card idle"><div class="eyebrow">${esc(st)}</div><div class="muted big">Free</div></div>`;
+    const r = b.recipe;
+    const target = b.t.mixStart + r.mixMinutes * MIN;
+    const done = r.chillMinutes > 0
+      ? S().chillLocations.map((loc) => batchBtn(b, 'finishMix', `Done → ${esc(loc)}`, { to: loc }, 'primary')).join('')
+      : batchBtn(b, 'finishMix', 'Done → Cookie Prep', { to: 'prep' }, 'primary');
+    return `<div class="card active" style="--c:${esc(r.color)}"><div class="eyebrow">${esc(st)}</div>${title(b)}
+      <div class="meta">Mixing ${timerUp(b.t.mixStart)} · planned ${r.mixMinutes} min ${progress(b.t.mixStart, target)}</div>
+      <details ${only ? 'open' : ''}><summary>Ingredients (${r.ingredients.length})</summary><ul class="ingredients">${r.ingredients.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></details>
+      ${stepList(b, 'mix', r.mixSteps)}
+      ${r.chillMinutes > 0 ? `<div class="hint">❄️ Needs ${r.chillMinutes} min chill. ${esc(r.chillNotes)}</div>` : '<div class="hint">No chill needed — goes straight to Cookie Prep.</div>'}
+      <div class="btnrow">${done}</div></div>`;
+  };
+  const stations = section(only ? 'This station' : 'Mix stations', `<div class="grid">${shown.map(stationCard).join('')}</div>`);
+
+  // A single-station tablet shows its own work first.
+  if (only) html += stations;
 
   if (queue.length) {
     const b = queue[0], r = b.recipe;
     const startBtns = free.length
       ? free.map((st) => batchBtn(b, 'startMix', `Start at ${esc(st)}`, { station: st }, 'primary big')).join('')
-      : `<div class="muted">All mix stations busy — next one frees up ${relTime(P(b.id).mixStart)}.</div>`;
+      : `<div class="muted">${only ? `${esc(only)} is busy — finish the current batch first.` : `All mix stations busy — next one frees up ${relTime(P(b.id).mixStart)}.`}</div>`;
     html += `<div class="card next" style="--c:${esc(r.color)}">
       <div class="eyebrow">Up next to mix</div>${title(b)}${recipeChips(r, b)}
       ${why(b)}
@@ -148,28 +174,21 @@ pages.mixing = () => {
     html += empty('Nothing queued to mix. Add batches from <a href="#/overview">Overview</a>.');
   }
 
-  html += section('Mix stations', `<div class="grid">${S().mixStations.map((st) => {
-    const b = mixing.find((x) => x.location === st);
-    if (!b) return `<div class="card idle"><div class="eyebrow">${esc(st)}</div><div class="muted big">Free</div></div>`;
-    const r = b.recipe;
-    const target = b.t.mixStart + r.mixMinutes * MIN;
-    const done = r.chillMinutes > 0
-      ? S().chillLocations.map((loc) => batchBtn(b, 'finishMix', `Done → ${esc(loc)}`, { to: loc }, 'primary')).join('')
-      : batchBtn(b, 'finishMix', 'Done → Cookie Prep', { to: 'prep' }, 'primary');
-    return `<div class="card active" style="--c:${esc(r.color)}"><div class="eyebrow">${esc(st)}</div>${title(b)}
-      <div class="meta">Mixing ${timerUp(b.t.mixStart)} · planned ${r.mixMinutes} min ${progress(b.t.mixStart, target)}</div>
-      <details><summary>Ingredients (${r.ingredients.length})</summary><ul class="ingredients">${r.ingredients.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></details>
-      ${stepList(b, 'mix', r.mixSteps)}
-      ${r.chillMinutes > 0 ? `<div class="hint">❄️ Needs ${r.chillMinutes} min chill. ${esc(r.chillNotes)}</div>` : '<div class="hint">No chill needed — goes straight to Cookie Prep.</div>'}
-      <div class="btnrow">${done}</div></div>`;
-  }).join('')}</div>`);
+  if (!only) html += stations;
 
   html += section('Mixing queue', queue.length > 1 ? table(['#', 'Batch', 'Planned start', 'Chill', 'Oven'], queue.slice(1).map((b, i) => [
-    i + 2, title(b), `${fmtTime(P(b.id).mixStart)} <span class="muted">(${relTime(P(b.id).mixStart)})</span>`,
+    i + 2, title(b), `${fmtTime(P(b.id).mixStart)} <span class="muted">(${relTime(P(b.id).mixStart)})${all.length > 1 && P(b.id).mixStation ? ` · ${esc(P(b.id).mixStation)}` : ''}</span>`,
     b.recipe.chillMinutes ? `${b.recipe.chillMinutes}m` : '—', `${b.recipe.ovenTempF}°F`,
   ])) : empty('No more batches waiting.'));
   return html;
 };
+
+/** "Show: All | Station 1 | Station 2" links; #/<page>/<n> shows one station. */
+function stationPicker(page, allLabel, names, only) {
+  return `<div class="chips stationpick"><span class="muted">Show:</span>
+    <a class="chip ${only ? '' : 'on'}" href="#/${page}">${esc(allLabel)}</a>
+    ${names.map((nm, i) => `<a class="chip ${nm === only ? 'on' : ''}" href="#/${page}/${i + 1}">${esc(nm)}</a>`).join('')}</div>`;
+}
 
 function why(b) {
   const p = P(b.id);
@@ -248,11 +267,7 @@ pages.prep = (arg) => {
     : `<span class="muted">${only ? `${esc(only.name)} is full` : 'All prep stations are full'}</span>`);
   let html = '';
 
-  if (multi) {
-    html += `<div class="chips stationpick"><span class="muted">Show:</span>
-      <a class="chip ${only ? '' : 'on'}" href="#/prep">All prep stations</a>
-      ${all.map((st, i) => `<a class="chip ${st === only ? 'on' : ''}" href="#/prep/${i + 1}">${esc(st.name)}</a>`).join('')}</div>`;
-  }
+  if (multi) html += stationPicker('prep', 'All prep stations', names, only?.name);
 
   const activeCard = (b) => {
     const r = b.recipe;
@@ -587,7 +602,7 @@ pages.overview = () => {
     ${btn('Add to queue', 'addBatches', {}, 'primary')}
   </div><p class="muted">The planner re-sorts the queue automatically: long chills start first, same oven temps are grouped, and ovens are kept busy.</p>` : empty('Create a recipe first on the <a href="#/recipes">Recipes</a> page.'));
 
-  html += section('Shares', sharesTable(true));
+  html += section('Shares', sharesTable(true), ` <a class="btn tiny" href="#/report">🖨 End of day report</a>`);
   html += section('Timeline', active.length ? gantt(active) : empty('No active batches.'));
 
   const all = [...App.state.batches].sort((a, b) => STAGES.indexOf(b.stage) - STAGES.indexOf(a.stage) || (P(a.id).mixStart ?? 0) - (P(b.id).mixStart ?? 0));
@@ -646,6 +661,75 @@ function gantt(active) {
 function table(head, rows) {
   return `<div class="tablewrap"><table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
+
+// ---------- End of day report (printable)
+const durMin = (a, b) => (a && b && b >= a ? Math.round((b - a) / MIN) : null);
+const minCell = (m) => (m === null ? '—' : fmtMin(m * MIN));
+
+pages.report = () => {
+  const s = S();
+  const shares = Number(s.shares) || 0;
+  const log = App.state.packLog || [];
+  const byId = new Map(App.state.batches.map((b) => [b.id, b]));
+  const unfinished = App.state.batches.filter((b) => b.stage !== 'done');
+  const totals = log.reduce((t, e) => ({ containers: t.containers + e.containers, cookies: t.cookies + e.cookies }), { containers: 0, cookies: 0 });
+  const pansBaked = log.reduce((n, e) => n + (byId.get(e.batchId)?.pans || 0), 0);
+  const firstStart = Math.min(...log.map((e) => byId.get(e.batchId)?.t.mixStart).filter(Boolean));
+  const lastDone = Math.max(...log.map((e) => e.at));
+  const rows = sharesRows(false);
+  const short = shares ? rows.filter((x) => x.per && x.need > 0) : [];
+
+  // Per-batch timing from the timestamps each station recorded.
+  const batchRows = [...log].sort((a, b) => a.at - b.at).map((e) => {
+    const b = byId.get(e.batchId), t = b?.t || {};
+    const bakeEnd = t.allOut || t.coolStart;
+    return [
+      esc(e.label), b ? String(b.pans) : '—',
+      `${e.containers} × ${e.perContainer}`, `<b>${e.cookies}</b>`,
+      fmtTime(t.mixStart), fmtTime(e.at),
+      minCell(durMin(t.mixStart, t.mixEnd)),
+      minCell(durMin(t.chillStart, t.chillEnd)),
+      minCell(durMin(t.prepStart, t.prepEnd)),
+      minCell(durMin(t.panChillStart, t.panChillEnd)),
+      minCell(durMin(t.bakeStart, bakeEnd)),
+      minCell(durMin(bakeEnd, t.packStart)),
+      minCell(durMin(t.packStart, t.done)),
+      `<b>${minCell(durMin(t.mixStart, t.done))}</b>`,
+    ];
+  });
+
+  return `<div class="report">
+    <div class="noprint btnrow report-actions">${btn('🖨 Print report', 'print', {}, 'primary big')}<a class="btn big" href="#/overview">Back to Overview</a></div>
+    <header class="report-head">
+      <h1>${esc(s.kitchenName)} — End of day report</h1>
+      <div class="muted">${new Date().toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} · generated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
+    </header>
+
+    <div class="report-stats">
+      <div><b>${log.length}</b><span>batches packed</span></div>
+      <div><b>${totals.cookies}</b><span>cookies packed</span></div>
+      <div><b>${totals.containers}</b><span>containers</span></div>
+      <div><b>${pansBaked || '—'}</b><span>pans baked</span></div>
+      <div><b>${log.length && Number.isFinite(firstStart) ? `${fmtTime(firstStart)}–${fmtTime(lastDone)}` : '—'}</b><span>first mix to last pack</span></div>
+    </div>
+
+    <h2>Shares${shares ? ` (${shares})` : ''}</h2>
+    ${shares ? (rows.length ? table(['Cookie', 'Containers packed', 'Cookies packed', 'Goal', 'Result'], rows.map((x) => [
+      esc(x.name), `${x.containers}${x.per ? ` of ${shares}` : ''}`, String(x.cookies),
+      x.per ? `${shares} × ${x.per} = ${shares * x.per}` : 'not in shares',
+      !x.per ? '—' : x.need ? `<span class="warn-text">Short ${x.need} container${x.need > 1 ? 's' : ''} (${x.need * x.per} cookies)</span>` : `<span class="ok">✓ Met${x.containers > shares ? ` (+${x.containers - shares} extra)` : ''}</span>`,
+    ])) : '<p class="muted">Nothing packed.</p>') : '<p class="muted">Not tracking shares (set the number of shares in Settings).</p>'}
+    ${short.length ? `<p class="warn-text">Short today: ${short.map((x) => `${esc(x.name)} (${x.need})`).join(', ')}.</p>` : ''}
+
+    <h2>Batches packed</h2>
+    ${batchRows.length ? `<p class="muted small">Times are how long each step actually took, from when each station tapped start and done.</p>
+      ${table(['Batch', 'Pans', 'Containers', 'Cookies', 'Mixed', 'Packed', 'Mix', 'Chill', 'Prep', 'Pan chill', 'Bake', 'Cool', 'Pack', 'Total'], batchRows)}` : '<p class="muted">No batches packed yet.</p>'}
+
+    <h2>Not finished</h2>
+    ${unfinished.length ? table(['Batch', 'Stage', 'Where', 'Pans'], unfinished.map((b) => [esc(b.label), STAGE_LABEL[b.stage], esc(b.location), pansText(b)]))
+      : '<p class="muted">Everything queued today was finished.</p>'}
+  </div>`;
+};
 
 // ---------- Recipes
 pages.recipes = () => {
@@ -808,6 +892,7 @@ const ACTIONS = {
   clearAll: () => confirm('Remove every batch, including ones in progress?') && api('POST', '/api/batches/clear-all'),
   deleteRecipe: (d) => confirm(`Delete recipe "${d.name}"? Batches already queued keep their copy.`) && api('DELETE', `/api/recipes/${d.id}`),
   go: (d) => { location.hash = d.to; },
+  print: () => window.print(),
   addStep: (d, el) => el.previousElementSibling.insertAdjacentHTML('beforeend', stepRow()),
   rmStep: (d, el) => el.closest('.steprow').remove(),
   async saveRecipe() {
@@ -976,7 +1061,7 @@ function render() {
   App.routeKey = key;
   if (fresh) App.locked = false;
   $('#kitchen-name').textContent = S().kitchenName;
-  const st = [...STATIONS, ...ADMIN].find((x) => x.key === page) || (page === 'recipe' ? { icon: '📖', name: 'Edit recipe' } : null);
+  const st = [...STATIONS, ...ADMIN].find((x) => x.key === page) || (page === 'recipe' ? { icon: '📖', name: 'Edit recipe' } : page === 'report' ? { icon: '🖨', name: 'End of day report' } : null);
   $('#station-title').innerHTML = st ? `${st.icon} ${esc(st.name)}` : '';
   $('#nav').innerHTML = [...STATIONS, ...ADMIN].map((x) => `<a href="#/${x.key}" class="${x.key === page ? 'on' : ''}" title="${esc(x.name)}">${x.icon}<span>${esc(x.name)}</span></a>`).join('');
   if (App.locked && !fresh) return;
